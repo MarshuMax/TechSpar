@@ -11,8 +11,17 @@ import {
 import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { useEffect, useState } from "react";
+import { getCopilotPreparedAnswers } from "../../api/copilot";
+import PreparedAnswersView from "./PreparedAnswersView";
 
-export default function PrepResultCards({ status }) {
+export default function PrepResultCards({ status, prepId }) {
+  const [knowledge, setKnowledge] = useState(null);
+  const [knowledgeError, setKnowledgeError] = useState("");
+  useEffect(() => {
+    if (!prepId || !status.compiled_knowledge_summary) return;
+    getCopilotPreparedAnswers(prepId).then(setKnowledge).catch((error) => setKnowledgeError(error.message));
+  }, [prepId, status.compiled_knowledge_summary]);
   const fitReport = status.fit_report || {};
   const riskMap = status.risk_map || [];
   const jdAnalysis = status.jd_analysis || {};
@@ -109,6 +118,10 @@ export default function PrepResultCards({ status }) {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {status.compiled_knowledge_summary && (
+        <PreparedAnswersView knowledge={knowledge} error={knowledgeError} loading={!knowledge && !knowledgeError} />
       )}
 
       <div className="grid gap-5 xl:grid-cols-2">

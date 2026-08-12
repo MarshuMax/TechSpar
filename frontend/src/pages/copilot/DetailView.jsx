@@ -21,6 +21,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
 import PrepResultCards from "./PrepResultCards";
+import MaterialSelector from "./MaterialSelector";
 import { PAGE_CLASS, formatFileSize } from "./shared";
 
 function HintChip({ title, description }) {
@@ -70,6 +71,7 @@ export default function DetailView({ prepId: initialPrepId, onBack, onStartInter
   const [company, setCompany] = useState("");
   const [position, setPosition] = useState("");
   const [jdText, setJdText] = useState("");
+  const [documentIds, setDocumentIds] = useState([]);
   const [resumeFile, setResumeFile] = useState(null);
   const [loadingResume, setLoadingResume] = useState(true);
   const [profile, setProfile] = useState(null);
@@ -114,6 +116,8 @@ export default function DetailView({ prepId: initialPrepId, onBack, onStartInter
         setStatus(data);
         if (data.company) setCompany(data.company);
         if (data.position) setPosition(data.position);
+        if (data.jd_text) setJdText(data.jd_text);
+        if (Array.isArray(data.document_ids)) setDocumentIds(data.document_ids);
       } catch (error) {
         setError(error.message);
       }
@@ -147,7 +151,7 @@ export default function DetailView({ prepId: initialPrepId, onBack, onStartInter
     setError("");
     setSubmitting(true);
     try {
-      const { prep_id } = await startCopilotPrep({ jdText, company, position });
+      const { prep_id } = await startCopilotPrep({ jdText, company, position, documentIds });
       setPrepId(prep_id);
       setStatus({ status: "running", progress: "初始化中..." });
     } catch (error) {
@@ -244,6 +248,12 @@ export default function DetailView({ prepId: initialPrepId, onBack, onStartInter
                   </div>
                 )}
 
+                <MaterialSelector
+                  value={documentIds}
+                  onChange={setDocumentIds}
+                  disabled={!!prepId}
+                />
+
                 <div className="mt-1 flex flex-col gap-1 rounded-2xl border border-border/40 bg-card/20 p-1.5">
                   <div className="flex items-center justify-between px-3 py-2.5 rounded-xl hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors">
                     <div className="flex items-center gap-3.5">
@@ -291,7 +301,12 @@ export default function DetailView({ prepId: initialPrepId, onBack, onStartInter
 
           {isDone && status ? (
             <div className="space-y-5">
-              <PrepResultCards status={status} />
+              {status.source_state === "stale" && (
+                <div className="rounded-2xl border border-amber-500/25 bg-amber-500/8 px-4 py-3 text-sm text-amber-500">
+                  此 Prep 使用的部分资料已更新或删除。旧问答包仍可使用，但建议重新准备。
+                </div>
+              )}
+              <PrepResultCards status={status} prepId={prepId} />
             </div>
           ) : !prepId && isNew && (
             <Card className="border-dashed border-border/80 bg-card/55">
@@ -354,6 +369,7 @@ export default function DetailView({ prepId: initialPrepId, onBack, onStartInter
                 <MiniMetric label="画像领域" value={topicCount} />
                 <MiniMetric label="弱点" value={weakPointCount} />
                 <MiniMetric label="JD 长度" value={isNew ? charCount : "---"} />
+                <MiniMetric label="面试资料" value={documentIds.length} />
               </div>
 
               <div className="mt-5 space-y-3">
@@ -395,6 +411,7 @@ export default function DetailView({ prepId: initialPrepId, onBack, onStartInter
                   <InfoRow label="岗位" value={position.trim() || "未填写"} />
                   <InfoRow label="简历" value={resumeReady ? resumeFile.filename : "未检测到"} />
                   <InfoRow label="画像" value={topicCount > 0 ? `${topicCount} 领域 / ${weakPointCount} 弱点` : "暂无"} />
+                  <InfoRow label="面试资料" value={documentIds.length ? `${documentIds.length} 份` : "未选择"} />
                 </div>
               </CardContent>
             </Card>

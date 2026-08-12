@@ -30,6 +30,9 @@ JD 原文:
 候选人画像摘要:
 {profile_summary}
 
+本次选择的个人面试资料:
+{material_context}
+
 输出严格 JSON:
 {{
   "overall_fit": 0.72,
@@ -41,6 +44,52 @@ JD 原文:
     {{"point": "差距描述", "risk": "high|medium|low", "mitigation": "建议应对策略"}}
   ],
   "talking_points": ["面试中主动提及的要点"]
+}}
+只输出 JSON，不要其他内容。"""
+
+KNOWLEDGE_COMPILER_PROMPT = """你正在把候选人的面试资料编译成可在实时面试中直接使用的口语答案。
+
+## 当前策略节点
+{node}
+
+## 目标岗位 JD
+{jd_text}
+
+## 简历证据
+{resume_context}
+
+## 画像摘要
+{profile_summary}
+
+## 本节点命中的已选个人资料
+{material_context}
+
+## 岗位匹配报告
+{fit_report}
+
+## 风险提示
+{risk_hint}
+
+候选人资料是事实源，必须遵守：
+1. 不得编造项目、职责、指标、工具或技术。
+2. 不得把理论知识改写成候选人的工作经历。
+3. 只有证据明确支持时才能使用“我做过/我负责”的表述。
+4. 证据不足时给出保守回答，明确区分实际经历与知识理解。
+5. 回答要自然、适合口述；主答案控制在约 60-120 秒，短答案控制在约 20-30 秒。
+6. personal_document 引用的 document_id 必须来自上方资料标签；不要杜撰来源。
+7. 生成 3-8 个真正语义相近的中英文问法，不要仅替换标点。
+
+输出严格 JSON：
+{{
+  "question_variants": ["问法1", "问法2"],
+  "prepared_answer": "主答案",
+  "short_answer": "短答案",
+  "key_points": ["要点"],
+  "source_refs": [
+    {{"source_type": "personal_document|resume|profile", "document_id": "个人资料ID或空", "evidence": "支持该陈述的短证据"}}
+  ],
+  "confidence": 0.0,
+  "warnings": []
 }}
 只输出 JSON，不要其他内容。"""
 
@@ -60,6 +109,12 @@ HR_STRATEGY_PROMPT = """你是一位资深技术面试官，正在为 {role_titl
 ### 候选人画像（弱点 + 掌握度）
 {profile_summary}
 
+### 候选人简历
+{resume_context}
+
+### 本次明确选择的个人面试资料
+{material_context}
+
 ## 任务
 
 生成一棵 **提问策略树**，模拟 HR 视角的提问路径：
@@ -72,6 +127,7 @@ HR_STRATEGY_PROMPT = """你是一位资深技术面试官，正在为 {role_titl
 6. 树深度最多 3 层（入口 depth=0 → 追问 depth=1 → 深追 depth=2）
 7. technical 方向的入口节点数量与 JD 权重成正比
 8. 每个考察维度至少包含 2-3 个追问分支
+9. 项目与技术细节必须以简历和本次所选资料为依据；不要引入资料中不存在的候选人经历
 
 输出严格 JSON:
 {{

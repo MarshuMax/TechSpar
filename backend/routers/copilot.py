@@ -11,6 +11,8 @@ from langchain_core.messages import HumanMessage
 from backend.auth import get_current_user
 from backend.llm_provider import resolve_dashscope_key
 from backend.memory import llm_update_profile
+from backend.models import CopilotTestMatchRequest
+from backend.personal_agent import get_documents_by_ids
 from backend.runtime import _copilot_sessions
 from backend.storage import copilot_preps as prep_store
 
@@ -48,14 +50,48 @@ async def _update_copilot_profile(fit_report: dict, position: str, user_id: str)
 @rest_router.post("/copilot/prep")
 async def start_copilot_prep(
     background_tasks: BackgroundTasks,
-    jd_text: str = Form(...),
-    company: str = Form(""),
-    position: str = Form(""),
+    jd_text: str = Form(..., min_length=50, max_length=12000),
+    company: str = Form("", max_length=200),
+    position: str = Form("", max_length=200),
+    document_ids: str = Form("[]"),
     user_id: str = Depends(get_current_user),
 ):
     """启动 Copilot Prep Phase（后台异步执行）。"""
+    try:
+        parsed_document_ids = json.loads(document_ids or "[]")
+        if not isinstance(parsed_document_ids, list) or not all(
+            isinstance(value, str) for value in parsed_document_ids
+        ):
+            raise ValueError
+        parsed_document_ids = list(dict.fromkeys(parsed_document_ids))
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(400, "document_ids 必须是字符串数组")
+
+    try:
+        selected_documents = get_documents_by_ids(
+            parsed_document_ids, user_id, require_ready=True
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    source_snapshot = [
+        {
+            "document_id": item["document_id"],
+            "filename": item["filename"],
+            "updated_at": item.get("updated_at", ""),
+        }
+        for item in selected_documents
+    ]
+
     prep_id = uuid.uuid4().hex[:12]
-    prep_store.create_prep(prep_id, user_id, company, position, jd_text)
+    prep_store.create_prep(
+        prep_id,
+        user_id,
+        company,
+        position,
+        jd_text,
+        parsed_document_ids,
+        source_snapshot,
+    )
 
     async def _run_prep():
         from backend.graphs.copilot_prep import run_copilot_prep
@@ -69,6 +105,8 @@ async def start_copilot_prep(
                 user_id=user_id,
                 company=company,
                 position=position,
+                document_ids=parsed_document_ids,
+                prep_id=prep_id,
                 on_progress=on_progress,
             )
             prep_store.set_done(prep_id, result)
@@ -117,12 +155,53 @@ async def get_copilot_prep_status(prep_id: str, user_id: str = Depends(get_curre
     if not data:
         raise HTTPException(404, "Prep session not found")
 
+    snapshot = data.get("source_snapshot", [])
+    source_state = "untracked" if data.get("document_ids") and not snapshot else "current"
+    source_changes: list[dict] = []
+    if snapshot:
+        try:
+            current_documents = get_documents_by_ids(
+                [item.get("document_id", "") for item in snapshot], user_id
+            )
+            current_by_id = {item["document_id"]: item for item in current_documents}
+        except ValueError:
+            current_by_id = {
+                item["document_id"]: item
+                for item in get_documents_by_ids([], user_id)
+            }
+            # Resolve each entry separately so deleted documents can be reported.
+            for old in snapshot:
+                try:
+                    item = get_documents_by_ids([old.get("document_id", "")], user_id)[0]
+                    current_by_id[item["document_id"]] = item
+                except (ValueError, IndexError):
+                    source_changes.append({
+                        "document_id": old.get("document_id", ""),
+                        "filename": old.get("filename", ""),
+                        "reason": "deleted",
+                    })
+        for old in snapshot:
+            current = current_by_id.get(old.get("document_id"))
+            if current and current.get("updated_at", "") != old.get("updated_at", ""):
+                source_changes.append({
+                    "document_id": old.get("document_id", ""),
+                    "filename": current.get("filename", old.get("filename", "")),
+                    "reason": "updated",
+                })
+        if source_changes:
+            source_state = "stale"
+
     resp = {
         "status": data["status"],
         "progress": data["progress"],
         "error": data.get("error", ""),
         "company": data.get("company", ""),
         "position": data.get("position", ""),
+        "jd_text": data.get("jd_text", ""),
+        "document_ids": data.get("document_ids", []),
+        "source_snapshot": snapshot,
+        "source_state": source_state,
+        "source_changes": source_changes,
     }
     if data["status"] == "done" and data.get("result"):
         result = data["result"]
@@ -132,7 +211,54 @@ async def get_copilot_prep_status(prep_id: str, user_id: str = Depends(get_curre
         resp["risk_map"] = result.get("risk_map", [])
         resp["risk_summary"] = result.get("risk_summary", "")
         resp["prep_hints"] = result.get("prep_hints", [])
+        compiled = result.get("compiled_knowledge", {})
+        resp["compiled_knowledge_summary"] = {
+            "version": compiled.get("version"),
+            "compile_stats": compiled.get("compile_stats", {}),
+            "uncompiled_nodes": compiled.get("uncompiled_nodes", []),
+            "index_status": compiled.get("index_status", "missing"),
+        } if compiled else None
     return resp
+
+
+@rest_router.get("/copilot/prep/{prep_id}/prepared-answers")
+async def get_copilot_prepared_answers(prep_id: str, user_id: str = Depends(get_current_user)):
+    data = prep_store.get_prep(prep_id, user_id)
+    if not data or data["status"] != "done" or not data.get("result"):
+        raise HTTPException(404, "Prep not ready")
+    compiled = data["result"].get("compiled_knowledge")
+    if not compiled:
+        return {"version": None, "prepared_answers": {}, "uncompiled_nodes": [], "compile_stats": {}}
+    return compiled
+
+
+@rest_router.post("/copilot/prep/{prep_id}/test-match")
+async def test_copilot_prepared_match(
+    prep_id: str,
+    payload: CopilotTestMatchRequest,
+    user_id: str = Depends(get_current_user),
+):
+    import time
+    from backend.copilot.prepared_answer_matcher import match_prepared_answer
+    from backend.llm_provider import get_embedding
+
+    data = prep_store.get_prep(prep_id, user_id)
+    if not data or data["status"] != "done" or not data.get("result"):
+        raise HTTPException(404, "Prep not ready")
+    started = time.monotonic()
+    utterance_embedding = await asyncio.to_thread(
+        get_embedding(user_id).get_text_embedding, payload.question
+    )
+    result = match_prepared_answer(
+        prep_id=prep_id,
+        user_id=user_id,
+        utterance_embedding=utterance_embedding,
+        compiled_knowledge=data["result"].get("compiled_knowledge", {}),
+        utterance_text=payload.question,
+    )
+    result["route"] = "prepared" if result.get("matched") else "miss"
+    result["latency_ms"] = round((time.monotonic() - started) * 1000)
+    return result
 
 
 @rest_router.get("/copilot/prep/{prep_id}/tree")
@@ -190,7 +316,8 @@ async def copilot_realtime_ws(ws: WebSocket, session_id: str, token: str = ""):
                     )
                     _copilot_sessions[session_id] = session
                     await ws.send_json({"type": "started", "session_id": session_id})
-                    asyncio.create_task(_run_warmup(ws))
+                    if not session.get("prepared_enabled"):
+                        asyncio.create_task(_run_warmup(ws))
                 except Exception as exc:
                     logger.error("Copilot session init failed: %s", exc, exc_info=True)
                     await ws.send_json({"type": "error", "message": f"初始化失败: {exc}"})
@@ -243,6 +370,7 @@ async def _init_copilot_session(
 ) -> dict:
     """初始化 Copilot 实时会话。"""
     from backend.copilot import voiceprint_store
+    from backend.copilot.prepared_answer_index import load_navigator_embeddings
     from backend.copilot.strategy_tree import StrategyTreeNavigator
 
     prep_data = prep_store.get_prep(prep_id, user_id)
@@ -253,8 +381,33 @@ async def _init_copilot_session(
     tree = prep_result.get("question_strategy_tree", {})
 
     navigator = StrategyTreeNavigator(tree)
-    await ws.send_json({"type": "progress", "message": "正在预计算策略树 embedding..."})
-    await navigator.precompute_embeddings()
+    compiled = prep_result.get("compiled_knowledge") or {}
+    prepared_enabled = compiled.get("index_status") == "ready"
+    if prepared_enabled:
+        try:
+            stored_embeddings = load_navigator_embeddings(prep_id, user_id)
+            expected_nodes = {
+                node_id for node_id, node in (tree.get("nodes") or {}).items()
+                if node.get("sample_questions")
+            }
+            dimensions = {
+                len(vector)
+                for node_embeddings in stored_embeddings.values()
+                for _, vector in node_embeddings
+            }
+            if not expected_nodes.issubset(stored_embeddings) or len(dimensions) != 1:
+                raise ValueError("prepared index is incomplete or inconsistent")
+            navigator.load_embeddings(stored_embeddings)
+            await ws.send_json({"type": "progress", "message": "预编译知识包已加载"})
+        except Exception as exc:
+            logger.warning("Prepared index load failed for prep %s: %s", prep_id, exc)
+            prepared_enabled = False
+    if not prepared_enabled:
+        await ws.send_json({
+            "type": "progress",
+            "message": "预编译索引不可用，正在启用兼容模式...",
+        })
+        await navigator.precompute_embeddings()
 
     vp_client = None
     vp_id = None
@@ -292,8 +445,16 @@ async def _init_copilot_session(
                         detected = asr.lookup_role_now()
                         if detected:
                             role = detected
-                    await ws.send_json({"type": "asr_final", "text": text, "role": role})
-                    await _process_utterance(ws, current_session, text, role=role)
+                    utterance_id = uuid.uuid4().hex[:12]
+                    await ws.send_json({
+                        "type": "asr_final",
+                        "text": text,
+                        "role": role,
+                        "utterance_id": utterance_id,
+                    })
+                    await _process_utterance(
+                        ws, current_session, text, role=role, utterance_id=utterance_id
+                    )
                 except Exception as exc:
                     logger.error("ASR sentence processing failed: %s", exc)
 
@@ -324,10 +485,21 @@ async def _init_copilot_session(
         "last_node_id": None,
         "turn_count": 0,
         "voiceprint_enabled": vp_enabled,
+        "prep_id": prep_id,
+        "user_id": user_id,
+        "prepared_enabled": prepared_enabled,
+        "active_utterance_id": None,
     }
 
 
-async def _process_utterance(ws: WebSocket, session: dict, text: str, *, role: str = "hr"):
+async def _process_utterance(
+    ws: WebSocket,
+    session: dict,
+    text: str,
+    *,
+    role: str = "hr",
+    utterance_id: str | None = None,
+):
     """处理一句话（HR 提问或候选人自述）。"""
     if not session:
         return
@@ -341,16 +513,45 @@ async def _process_utterance(ws: WebSocket, session: dict, text: str, *, role: s
     from backend.copilot import hr_profiler
     from backend.copilot.answer_advisor import prepare_advice_context, stream_advice
     from backend.copilot.intent_classifier import classify_intent
+    from backend.copilot.prepared_answer_matcher import match_prepared_answer
+    import time
 
     navigator = session.get("navigator")
     prep = session.get("prep", {})
 
     conversation.append({"role": "hr", "text": text})
     session["turn_count"] = session.get("turn_count", 0) + 1
+    utterance_id = utterance_id or uuid.uuid4().hex[:12]
+    session["active_utterance_id"] = utterance_id
 
+    intent_started = time.monotonic()
     intent_result = await classify_intent(text, navigator, last_node_id=session.get("last_node_id"))
+    intent_ms = round((time.monotonic() - intent_started) * 1000)
+    retrieval_started = time.monotonic()
+    prepared_match = {"matched": False, "score": 0.0, "reason": "disabled"}
+    if session.get("prepared_enabled"):
+        try:
+            prepared_match = match_prepared_answer(
+                prep_id=session.get("prep_id", ""),
+                user_id=session.get("user_id", ""),
+                utterance_embedding=intent_result.get("utterance_embedding"),
+                compiled_knowledge=prep.get("compiled_knowledge", {}),
+                utterance_text=text,
+                last_node_id=session.get("last_node_id"),
+            )
+        except Exception as exc:
+            logger.warning("Prepared answer match failed: %s", exc)
+            prepared_match = {"matched": False, "score": 0.0, "reason": "matcher_error"}
+    retrieval_ms = round((time.monotonic() - retrieval_started) * 1000)
+    if session.get("active_utterance_id") != utterance_id:
+        return
     node_id = intent_result.get("node_id")
     intent = intent_result.get("intent", "unknown")
+    if prepared_match.get("matched"):
+        node_id = prepared_match.get("node_id") or node_id
+        matched_node = navigator.get_node(node_id) if node_id else None
+        if matched_node:
+            intent = matched_node.get("intent", intent)
     if node_id:
         session["last_node_id"] = node_id
 
@@ -373,10 +574,11 @@ async def _process_utterance(ws: WebSocket, session: dict, text: str, *, role: s
     ctx = prepare_advice_context(text, node_id, navigator, prep, conversation=conversation)
     await ws.send_json({
         "type": "copilot_update",
+        "utterance_id": utterance_id,
         "intent": intent,
         "tree_position": node_id,
         "topic": node.get("topic", "") if node else "",
-        "confidence": intent_result.get("confidence", 0),
+        "confidence": prepared_match.get("score") if prepared_match.get("matched") else intent_result.get("confidence", 0),
         "recommended_points": recommended_points,
         "children": children_list,
         "prep_hint": {
@@ -388,19 +590,63 @@ async def _process_utterance(ws: WebSocket, session: dict, text: str, *, role: s
     if ctx["risk_alert"]:
         await ws.send_json({
             "type": "risk_alert",
+            "utterance_id": utterance_id,
             "message": ctx["risk_alert"],
             "node_id": node_id,
         })
 
+    if prepared_match.get("matched"):
+        total_ms = intent_ms + retrieval_ms
+        await ws.send_json({
+            "type": "prepared_answer",
+            "utterance_id": utterance_id,
+            "answer": prepared_match.get("prepared_answer", ""),
+            "short_answer": prepared_match.get("short_answer", ""),
+            "topic": prepared_match.get("topic", ""),
+            "confidence": prepared_match.get("score", 0),
+            "matched_question": prepared_match.get("matched_question", ""),
+            "latency_ms": total_ms,
+            "source": "compiled",
+            "sources": prepared_match.get("sources", []),
+        })
+        logger.info("copilot_route %s", json.dumps({
+            "question": text[:500],
+            "utterance_id": utterance_id,
+            "intent_ms": intent_ms,
+            "retrieval_ms": retrieval_ms,
+            "match_score": prepared_match.get("score", 0),
+            "route": "prepared",
+            "node_id": node_id,
+            "answer_id": prepared_match.get("answer_id"),
+            "total_ms": total_ms,
+        }, ensure_ascii=False))
+        if hr_profiler.should_run(session["turn_count"]):
+            asyncio.create_task(_run_hr_profiler(ws, session))
+        asyncio.create_task(_run_interview_monitor(ws, session))
+        return
+
+    fallback_started = time.monotonic()
+    first_token_ms = None
+
     async def run_answer_coach():
+        nonlocal first_token_ms
         async for item in stream_advice(ctx["prompt"]):
+            if session.get("active_utterance_id") != utterance_id:
+                return
             if item["type"] == "chunk":
-                await ws.send_json({"type": "answer_chunk", "text": item["text"]})
+                await ws.send_json({"type": "answer_chunk", "text": item["text"], "utterance_id": utterance_id})
             elif item["type"] == "meta":
-                await ws.send_json({"type": "answer_meta", "first_token_ms": item["first_token_ms"]})
+                first_token_ms = item["first_token_ms"]
+                await ws.send_json({
+                    "type": "answer_meta",
+                    "first_token_ms": first_token_ms,
+                    "utterance_id": utterance_id,
+                    "source": "llm_fallback",
+                })
             elif item["type"] == "done":
                 await ws.send_json({
                     "type": "answer_done",
+                    "utterance_id": utterance_id,
                     "total_ms": item.get("total_ms"),
                     "chunk_count": item.get("chunk_count"),
                 })
@@ -410,6 +656,17 @@ async def _process_utterance(ws: WebSocket, session: dict, text: str, *, role: s
     asyncio.create_task(_run_interview_monitor(ws, session))
 
     await run_answer_coach()
+    logger.info("copilot_route %s", json.dumps({
+        "question": text[:500],
+        "utterance_id": utterance_id,
+        "intent_ms": intent_ms,
+        "retrieval_ms": retrieval_ms,
+        "match_score": prepared_match.get("score", 0),
+        "route": "llm_fallback",
+        "node_id": node_id,
+        "first_token_ms": first_token_ms,
+        "total_ms": round((time.monotonic() - fallback_started) * 1000),
+    }, ensure_ascii=False))
 
 
 async def _run_warmup(ws: WebSocket):
@@ -429,8 +686,12 @@ async def _run_warmup(ws: WebSocket):
                 if chunk_count == 1:
                     first_token_ms = round((time.monotonic() - start) * 1000)
         total_ms = round((time.monotonic() - start) * 1000)
-        await ws.send_json({"type": "answer_meta", "first_token_ms": first_token_ms or total_ms})
-        await ws.send_json({"type": "answer_done", "total_ms": total_ms, "chunk_count": chunk_count})
+        await ws.send_json({
+            "type": "warmup_result",
+            "first_token_ms": first_token_ms or total_ms,
+            "total_ms": total_ms,
+            "chunk_count": chunk_count,
+        })
         logger.info("Warmup: first_token=%sms total=%sms", first_token_ms, total_ms)
     except Exception as exc:
         logger.warning("Warmup failed: %s", exc)

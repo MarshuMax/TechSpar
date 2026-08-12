@@ -27,6 +27,11 @@ def _get_conn() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_copilot_preps_user ON copilot_preps(user_id)")
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(copilot_preps)")}
+    if "document_ids" not in columns:
+        conn.execute("ALTER TABLE copilot_preps ADD COLUMN document_ids TEXT NOT NULL DEFAULT '[]'")
+    if "source_snapshot" not in columns:
+        conn.execute("ALTER TABLE copilot_preps ADD COLUMN source_snapshot TEXT NOT NULL DEFAULT '[]'")
     conn.commit()
     return conn
 
@@ -47,12 +52,30 @@ def reset_stale_running(user_id: str | None = None):
     conn.close()
 
 
-def create_prep(prep_id: str, user_id: str, company: str, position: str, jd_text: str):
+def create_prep(
+    prep_id: str,
+    user_id: str,
+    company: str,
+    position: str,
+    jd_text: str,
+    document_ids: list[str] | None = None,
+    source_snapshot: list[dict] | None = None,
+):
     conn = _get_conn()
     conn.execute(
-        "INSERT INTO copilot_preps (prep_id, user_id, company, position, jd_text, status, progress, created_at) "
-        "VALUES (?, ?, ?, ?, ?, 'running', '初始化中...', ?)",
-        (prep_id, user_id, company, position, jd_text[:200], datetime.now().isoformat()),
+        "INSERT INTO copilot_preps "
+        "(prep_id, user_id, company, position, jd_text, document_ids, source_snapshot, status, progress, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'running', '初始化中...', ?)",
+        (
+            prep_id,
+            user_id,
+            company,
+            position,
+            jd_text,
+            json.dumps(document_ids or [], ensure_ascii=False),
+            json.dumps(source_snapshot or [], ensure_ascii=False),
+            datetime.now().isoformat(),
+        ),
     )
     conn.commit()
     conn.close()
@@ -95,6 +118,8 @@ def get_prep(prep_id: str, user_id: str) -> dict | None:
         return None
     data = dict(row)
     data["result"] = json.loads(data["result"]) if data.get("result") else None
+    data["document_ids"] = json.loads(data.get("document_ids") or "[]")
+    data["source_snapshot"] = json.loads(data.get("source_snapshot") or "[]")
     return data
 
 
@@ -111,6 +136,21 @@ def list_preps(user_id: str) -> list[dict]:
 
 def delete_prep(prep_id: str, user_id: str) -> bool:
     conn = _get_conn()
+    exists = conn.execute(
+        "SELECT 1 FROM copilot_preps WHERE prep_id=? AND user_id=?", (prep_id, user_id)
+    ).fetchone()
+    if not exists:
+        conn.close()
+        return False
+    try:
+        conn.execute(
+            "DELETE FROM memory_vectors WHERE chunk_type='copilot_question_variant' "
+            "AND session_id=? AND user_id=?",
+            (prep_id, user_id),
+        )
+    except sqlite3.OperationalError:
+        # Older/minimal databases may not have initialized vector storage yet.
+        pass
     cursor = conn.execute(
         "DELETE FROM copilot_preps WHERE prep_id=? AND user_id=?", (prep_id, user_id)
     )
