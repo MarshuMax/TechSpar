@@ -3,15 +3,16 @@
 拓扑: fan-out(Company Researcher, JD Analyst, Fit Analyzer) → fan-in
       → HR Strategy Simulator → Risk Assessor → END
 """
+import asyncio
 import json
 import logging
 
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from backend.config import settings
-from backend.indexer import query_resume
 from backend.llm_provider import get_copilot_llm
-from backend.memory import get_profile, get_profile_summary
+from backend.memory import get_profile
+from backend.copilot.material_context import build_candidate_context
+from backend.copilot.knowledge_compiler import compile_strategy_tree
 from backend.copilot.company_search import search_company
 from backend.copilot.prompts import (
     JD_ANALYST_PROMPT,
@@ -22,13 +23,6 @@ from backend.copilot.prompts import (
 from backend.copilot.strategy_tree import parse_strategy_tree
 
 logger = logging.getLogger("uvicorn")
-
-
-def _has_resume(user_id: str) -> bool:
-    resume_dir = settings.user_resume_path(user_id)
-    return resume_dir.exists() and any(
-        f.suffix.lower() == ".pdf" for f in resume_dir.iterdir() if f.is_file()
-    )
 
 
 async def _run_company_researcher(company: str, position: str) -> str:
@@ -51,25 +45,16 @@ async def _run_jd_analyst(jd_text: str) -> dict:
         return {"role_title": "", "required_skills": [], "likely_question_dimensions": []}
 
 
-async def _run_fit_analyzer(jd_text: str, user_id: str) -> dict:
+async def _run_fit_analyzer(jd_text: str, candidate_context: dict, user_id: str) -> dict:
     """Agent 3: 简历-JD 匹配分析。"""
-    resume_context = "未上传简历"
-    if _has_resume(user_id):
-        try:
-            resume_context = str(query_resume(
-                "总结候选人的项目经历、技术栈、AI/后端/工程化相关实践",
-                user_id, top_k=4,
-            ))[:5000]
-        except Exception as e:
-            logger.warning(f"Resume query failed: {e}")
-            resume_context = "简历检索失败"
-
-    profile_summary = get_profile_summary(user_id)
+    resume_context = candidate_context.get("resume_context", "未上传简历")
+    profile_summary = candidate_context.get("profile_summary", "")
     llm = get_copilot_llm()
     prompt = FIT_ANALYZER_PROMPT.format(
         jd_text=jd_text[:6000],
         resume_context=resume_context,
         profile_summary=profile_summary,
+        material_context=candidate_context.get("material_context", "")[:8000] or "未选择个人面试资料",
     )
     resp = await llm.ainvoke([
         SystemMessage(content="你是匹配分析引擎。只返回 JSON。"),
@@ -86,12 +71,13 @@ async def _run_hr_strategy(
     company_report: str,
     jd_analysis: dict,
     fit_report: dict,
+    candidate_context: dict,
     user_id: str,
 ) -> dict:
     """Agent 4: 生成提问策略树。"""
     jd_analysis_str = json.dumps(jd_analysis, ensure_ascii=False, indent=2)
     fit_report_str = json.dumps(fit_report, ensure_ascii=False, indent=2)
-    profile_summary = get_profile_summary(user_id)
+    profile_summary = candidate_context.get("profile_summary", "")
 
     role_title = jd_analysis.get("role_title", "技术岗位")
 
@@ -102,6 +88,11 @@ async def _run_hr_strategy(
         jd_analysis=jd_analysis_str[:3000],
         fit_report=fit_report_str[:3000],
         profile_summary=profile_summary[:3000],
+        resume_context=str(candidate_context.get("resume_context", ""))[:5000],
+        material_context=(
+            str(candidate_context.get("material_context", ""))[:8000]
+            or "本次未选择个人面试资料"
+        ),
     )
     resp = await llm.ainvoke([
         SystemMessage(content="你是面试策略引擎。只返回 JSON。"),
@@ -114,7 +105,7 @@ async def _run_risk_assessor(
     strategy_tree: dict,
     profile: dict,
     fit_report: dict,
-) -> tuple[list[dict], list[dict]]:
+) -> tuple[list[dict], list[dict], str]:
     """Agent 5: 风险评估。"""
     nodes = strategy_tree.get("nodes", {})
     risk_nodes = [
@@ -124,7 +115,7 @@ async def _run_risk_assessor(
     ]
 
     if not risk_nodes:
-        return [], []
+        return [], [], ""
 
     weak_points = profile.get("weak_points", [])
     weak_text = json.dumps(weak_points[:10], ensure_ascii=False)
@@ -155,6 +146,8 @@ async def run_copilot_prep(
     user_id: str,
     company: str = "",
     position: str = "",
+    document_ids: list[str] | None = None,
+    prep_id: str = "",
     on_progress=None,
 ) -> dict:
     """执行完整的 Copilot Prep Pipeline。
@@ -164,8 +157,6 @@ async def run_copilot_prep(
     Returns:
         CopilotPrepState dict
     """
-    import asyncio
-
     from backend.user_context import set_current_user
 
     # Bind user for the whole prep pipeline — nested copilot subsystem calls
@@ -173,6 +164,7 @@ async def run_copilot_prep(
     # the ContextVar; asyncio.create_task below copies the context.
     set_current_user(user_id)
 
+    document_ids = document_ids or []
     profile = get_profile(user_id)
 
     # Layer 0: 三个 Analyst 并行
@@ -181,18 +173,21 @@ async def run_copilot_prep(
 
     company_task = asyncio.create_task(_run_company_researcher(company, position))
     jd_task = asyncio.create_task(_run_jd_analyst(jd_text))
-    fit_task = asyncio.create_task(_run_fit_analyzer(jd_text, user_id))
+    context_task = asyncio.create_task(build_candidate_context(
+        user_id=user_id, jd_text=jd_text, document_ids=document_ids,
+    ))
 
-    company_report, jd_analysis, fit_report = await asyncio.gather(
-        company_task, jd_task, fit_task,
+    company_report, jd_analysis, candidate_context = await asyncio.gather(
+        company_task, jd_task, context_task,
     )
+    fit_report = await _run_fit_analyzer(jd_text, candidate_context, user_id)
 
     # Layer 1: HR Strategy Simulator
     if on_progress:
         await on_progress("正在生成 HR 提问策略树...")
 
     strategy_tree = await _run_hr_strategy(
-        company_report, jd_analysis, fit_report, user_id,
+        company_report, jd_analysis, fit_report, candidate_context, user_id,
     )
 
     # Layer 2: Risk Assessor
@@ -201,21 +196,48 @@ async def run_copilot_prep(
 
     risk_map, prep_hints, risk_summary = await _run_risk_assessor(strategy_tree, profile, fit_report)
 
-    # 获取简历上下文用于存储
-    resume_context = ""
-    if _has_resume(user_id):
-        try:
-            resume_context = str(query_resume(
-                "候选人基本信息和核心经历", user_id, top_k=2,
-            ))[:2000]
-        except Exception:
-            pass
+    if on_progress:
+        await on_progress("正在预编译面试答案 0 / %d..." % len(strategy_tree.get("nodes", {})))
+
+    async def compiler_progress(done: int, total: int):
+        if on_progress:
+            await on_progress(f"正在预编译面试答案 {done} / {total}...")
+
+    compiled_knowledge = await compile_strategy_tree(
+        strategy_tree=strategy_tree,
+        jd_text=jd_text,
+        candidate_context=candidate_context,
+        fit_report=fit_report,
+        prep_hints=prep_hints,
+        user_id=user_id,
+        document_ids=document_ids,
+        on_progress=compiler_progress,
+    )
+
+    if on_progress:
+        await on_progress("正在建立高速检索索引...")
+    from backend.copilot.prepared_answer_index import build_prepared_answer_index
+    try:
+        await asyncio.to_thread(
+            build_prepared_answer_index,
+            prep_id=prep_id,
+            user_id=user_id,
+            strategy_tree=strategy_tree,
+            compiled_knowledge=compiled_knowledge,
+        )
+        compiled_knowledge["index_status"] = "ready"
+    except Exception as exc:
+        logger.warning("Prepared answer index build failed for prep %s: %s", prep_id, exc)
+        compiled_knowledge["index_status"] = "error"
+        compiled_knowledge["index_error"] = str(exc)[:500]
 
     return {
         "user_id": user_id,
         "jd_text": jd_text,
-        "resume_context": resume_context,
+        "resume_context": candidate_context.get("resume_context", ""),
         "profile": profile,
+        "document_ids": document_ids,
+        "candidate_context": candidate_context,
         "company_report": company_report,
         "jd_analysis": jd_analysis,
         "fit_report": fit_report,
@@ -223,6 +245,7 @@ async def run_copilot_prep(
         "risk_map": risk_map,
         "risk_summary": risk_summary,
         "prep_hints": prep_hints,
+        "compiled_knowledge": compiled_knowledge,
         "status": "done",
         "progress": "准备完成",
         "error": "",

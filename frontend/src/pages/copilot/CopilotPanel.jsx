@@ -7,6 +7,7 @@ import {
   Sparkles,
   Target,
 } from "lucide-react";
+import { useState } from "react";
 
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -35,7 +36,9 @@ export default function CopilotPanel({
   answerLoading,
   answerStreaming,
   monitorData,
+  answerMeta,
 }) {
+  const [showShort, setShowShort] = useState(false);
   const recommendedPoints = update?.recommended_points || [];
   const children = update?.children || [];
   const prepHint = update?.prep_hint;
@@ -145,7 +148,14 @@ export default function CopilotPanel({
           )}>
             {answerLoading ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
           </div>
-          <span className={cn("text-[11px] font-bold uppercase tracking-[0.15em]", (answerLoading || streamingAnswer) ? "text-green/90" : "text-dim/40")}>流式参考打样</span>
+          <span className={cn("text-[11px] font-bold uppercase tracking-[0.15em]", (answerLoading || streamingAnswer) ? "text-green/90" : "text-dim/40")}>
+            {answerMeta?.source === "compiled" ? "预编译参考答案" : "AI 实时参考答案"}
+          </span>
+          {answerMeta?.source === "compiled" && (
+            <span className="ml-auto rounded-md border border-green/25 bg-green/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-green">
+              ⚡ Prepared · {Math.round((answerMeta.confidence || 0) * 100)}% · {answerMeta.latencyMs}ms
+            </span>
+          )}
           {(answerLoading || answerStreaming) && (
             <span className="ml-auto flex items-center gap-1.5 text-[9px] font-bold tracking-[0.2em] text-green/80 bg-green/10 border border-green/25 rounded-md px-1.5 py-0.5 uppercase">
               <span className="inline-block w-1 h-1 rounded-full bg-green animate-pulse" />
@@ -166,10 +176,21 @@ export default function CopilotPanel({
               </p>
             </div>
           ) : streamingAnswer ? (
-            <p className="text-[13px] leading-7 text-text/90 whitespace-pre-wrap font-medium">
-              {streamingAnswer}
-              {answerStreaming && <span className="copilot-blink inline-block w-[2px] h-[1em] bg-green/80 translate-y-[2px] ml-[1px]" />}
-            </p>
+            <>
+              {answerMeta?.source === "compiled" && answerMeta.shortAnswer && (
+                <div className="mb-2 flex gap-1 rounded-lg bg-hover/60 p-1">
+                  <button className={cn("flex-1 rounded-md px-2 py-1 text-[10px] font-semibold", !showShort && "bg-card shadow-sm")} onClick={() => setShowShort(false)}>主答案</button>
+                  <button className={cn("flex-1 rounded-md px-2 py-1 text-[10px] font-semibold", showShort && "bg-card shadow-sm")} onClick={() => setShowShort(true)}>短答案</button>
+                </div>
+              )}
+              <p className="text-[13px] leading-7 text-text/90 whitespace-pre-wrap font-medium">
+                {showShort && answerMeta?.shortAnswer ? answerMeta.shortAnswer : streamingAnswer}
+                {answerStreaming && <span className="copilot-blink inline-block w-[2px] h-[1em] bg-green/80 translate-y-[2px] ml-[1px]" />}
+              </p>
+              {answerMeta?.matchedQuestion && (
+                <div className="mt-2 text-[10px] text-dim">命中问法：{answerMeta.matchedQuestion}</div>
+              )}
+            </>
           ) : (
             <PanelEmptyState active={false} />
           )}

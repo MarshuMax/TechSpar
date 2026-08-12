@@ -48,12 +48,16 @@ def init_memory_table():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mv_type ON memory_vectors(chunk_type)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mv_topic ON memory_vectors(topic)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_mv_user ON memory_vectors(user_id)")
-    # Migrate: add user_id if missing
-    try:
-        conn.execute("SELECT user_id FROM memory_vectors LIMIT 1")
-    except sqlite3.OperationalError:
+    # Older databases predate user scoping. Add the column before creating any
+    # index that references it, otherwise SQLite aborts before migration runs.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_vectors)")}
+    if "user_id" not in columns:
         conn.execute("ALTER TABLE memory_vectors ADD COLUMN user_id TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mv_user ON memory_vectors(user_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mv_user_type_session "
+        "ON memory_vectors(user_id, chunk_type, session_id)"
+    )
     conn.commit()
     conn.close()
     logger.info("memory_vectors table ready.")

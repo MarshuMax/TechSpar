@@ -32,12 +32,14 @@ export default function RealtimePhase({ prepId, onBack }) {
   const [hrProfile, setHrProfile] = useState(null);
   const [monitorData, setMonitorData] = useState(null);
   const [perfMetrics, setPerfMetrics] = useState(null);
+  const [answerMeta, setAnswerMeta] = useState(null);
   const [inputRole, setInputRole] = useState("hr");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [progressMsg, setProgressMsg] = useState("连接中...");
   const [started, setStarted] = useState(false);
   const [voiceprintAuto, setVoiceprintAuto] = useState(false);
   const chatEndRef = useRef(null);
+  const activeUtteranceRef = useRef(null);
 
   useEffect(() => {
     getVoiceprintStatus()
@@ -48,24 +50,53 @@ export default function RealtimePhase({ prepId, onBack }) {
   const handleUpdate = useCallback((msg) => {
     switch (msg.type) {
       case "copilot_update":
+        activeUtteranceRef.current = msg.utterance_id || null;
         setCurrentUpdate(msg);
         setStreamingAnswer("");
         setAnswerLoading(true);
         setAnswerStreaming(false);
         setPerfMetrics(null);
+        setAnswerMeta(null);
         break;
       case "answer_chunk":
+        if (msg.utterance_id && msg.utterance_id !== activeUtteranceRef.current) break;
         setStreamingAnswer((prev) => prev + (msg.text || ""));
         setAnswerLoading(false);
         setAnswerStreaming(true);
         break;
       case "answer_meta":
+        if (msg.utterance_id && msg.utterance_id !== activeUtteranceRef.current) break;
+        setAnswerMeta({ source: "llm_fallback", utteranceId: msg.utterance_id });
         setPerfMetrics((prev) => ({ ...prev, warming: false, firstTokenMs: msg.first_token_ms }));
         break;
       case "answer_done":
+        if (msg.utterance_id && msg.utterance_id !== activeUtteranceRef.current) break;
         setAnswerLoading(false);
         setAnswerStreaming(false);
         setPerfMetrics((prev) => ({ ...prev, warming: false, totalMs: msg.total_ms, chunkCount: msg.chunk_count }));
+        break;
+      case "prepared_answer":
+        if (msg.utterance_id && msg.utterance_id !== activeUtteranceRef.current) break;
+        setStreamingAnswer(msg.answer || "");
+        setAnswerLoading(false);
+        setAnswerStreaming(false);
+        setAnswerMeta({
+          source: "compiled",
+          utteranceId: msg.utterance_id,
+          shortAnswer: msg.short_answer || "",
+          confidence: msg.confidence || 0,
+          latencyMs: msg.latency_ms,
+          matchedQuestion: msg.matched_question || "",
+        });
+        setPerfMetrics({ warming: false, route: "prepared", totalMs: msg.latency_ms });
+        break;
+      case "warmup_result":
+        setPerfMetrics({
+          warming: false,
+          route: "warmup",
+          firstTokenMs: msg.first_token_ms,
+          totalMs: msg.total_ms,
+        });
         break;
       case "hr_profile_update":
         setHrProfile(msg);
@@ -87,7 +118,7 @@ export default function RealtimePhase({ prepId, onBack }) {
       case "asr_final":
         if (msg.text) {
           const role = msg.role === "candidate" ? "candidate" : "hr";
-          setConversation((prev) => [...prev, { role, text: msg.text }]);
+          setConversation((prev) => [...prev, { role, text: msg.text, utteranceId: msg.utterance_id }]);
         }
         break;
       case "error":
@@ -174,10 +205,15 @@ export default function RealtimePhase({ prepId, onBack }) {
                   <Loader2 size={10} className="animate-spin text-primary/50" />
                   <span>LLM 测速中...</span>
                 </>
+              ) : perfMetrics.route === "prepared" ? (
+                <>
+                  <Sparkles size={10} className="text-green/70" />
+                  <span>Prepared · {perfMetrics.totalMs}ms</span>
+                </>
               ) : (
                 <>
                   <Sparkles size={10} className="text-primary/50" />
-                  <span>{(perfMetrics.firstTokenMs / 1000).toFixed(1)}s 首token</span>
+                  <span>{((perfMetrics.firstTokenMs || 0) / 1000).toFixed(1)}s 首token</span>
                   {perfMetrics.totalMs > 0 && (
                     <>
                       <span className="text-border">·</span>
@@ -327,12 +363,14 @@ export default function RealtimePhase({ prepId, onBack }) {
 
         <div className="w-[340px] xl:w-[420px] shrink-0 overflow-y-auto bg-card/[0.03] border-l border-border/50">
           <CopilotPanel
+            key={answerMeta?.utteranceId || "copilot-panel"}
             update={currentUpdate}
             riskAlert={riskAlert}
             streamingAnswer={streamingAnswer}
             answerLoading={answerLoading}
             answerStreaming={answerStreaming}
             monitorData={monitorData}
+            answerMeta={answerMeta}
           />
         </div>
       </div>

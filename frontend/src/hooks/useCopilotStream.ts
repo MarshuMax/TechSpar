@@ -94,6 +94,8 @@ export default function useCopilotStream({
             case "answer_chunk":
             case "answer_meta":
             case "answer_done":
+            case "prepared_answer":
+            case "warmup_result":
             case "hr_profile_update":
             case "monitor_update":
             case "progress":

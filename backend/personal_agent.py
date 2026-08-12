@@ -190,6 +190,41 @@ def list_documents(user_id: str) -> list[dict]:
     return [_document_row(row) for row in rows]
 
 
+def get_documents_by_ids(
+    document_ids: list[str],
+    user_id: str,
+    *,
+    require_ready: bool = False,
+) -> list[dict]:
+    """Return user-owned documents in the caller's order.
+
+    This is also the ownership/status gate used by Copilot. Missing or foreign IDs
+    are intentionally indistinguishable so callers cannot probe another user's
+    library.
+    """
+    init_personal_agent_tables()
+    ordered_ids = list(dict.fromkeys(value for value in document_ids if value))
+    if not ordered_ids:
+        return []
+    placeholders = ",".join("?" for _ in ordered_ids)
+    conn = _get_conn()
+    rows = conn.execute(
+        f"SELECT * FROM personal_documents WHERE user_id = ? AND document_id IN ({placeholders})",
+        (user_id, *ordered_ids),
+    ).fetchall()
+    conn.close()
+    by_id = {row["document_id"]: _document_row(row) for row in rows}
+    missing = [document_id for document_id in ordered_ids if document_id not in by_id]
+    if missing:
+        raise ValueError("部分面试资料不存在或无权访问")
+    selected = [by_id[document_id] for document_id in ordered_ids]
+    if require_ready:
+        unavailable = [item["filename"] for item in selected if item["status"] != "ready"]
+        if unavailable:
+            raise ValueError(f"以下资料尚未完成索引: {', '.join(unavailable)}")
+    return selected
+
+
 def _set_document_status(
     document_id: str,
     user_id: str,
@@ -373,13 +408,34 @@ def delete_document(document_id: str, user_id: str) -> bool:
     return True
 
 
-def search_documents(query: str, user_id: str, top_k: int = 6) -> list[dict]:
+def search_documents(
+    query: str,
+    user_id: str,
+    top_k: int = 6,
+    document_ids: list[str] | None = None,
+) -> list[dict]:
+    """Search personal documents, optionally constrained to an explicit set.
+
+    ``None`` preserves the Personal Agent's all-library behavior. An empty list is
+    an explicit request to search no personal documents (used by Copilot preps).
+    """
+    if document_ids == []:
+        return []
     conn = _get_vector_conn()
-    rows = conn.execute(
+    sql = (
         "SELECT content, session_id, metadata, embedding FROM memory_vectors "
-        "WHERE chunk_type = ? AND user_id = ?",
-        (LIBRARY_CHUNK, user_id),
-    ).fetchall()
+        "WHERE chunk_type = ? AND user_id = ?"
+    )
+    params: list[object] = [LIBRARY_CHUNK, user_id]
+    if document_ids is not None:
+        ordered_ids = list(dict.fromkeys(value for value in document_ids if value))
+        if not ordered_ids:
+            conn.close()
+            return []
+        placeholders = ",".join("?" for _ in ordered_ids)
+        sql += f" AND session_id IN ({placeholders})"
+        params.extend(ordered_ids)
+    rows = conn.execute(sql, params).fetchall()
     conn.close()
     if not rows:
         return []

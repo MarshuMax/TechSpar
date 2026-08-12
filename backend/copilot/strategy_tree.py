@@ -36,6 +36,10 @@ class StrategyTreeNavigator:
             self._embeddings[node_id] = node_embs
         logger.info(f"Precomputed embeddings for {len(self._embeddings)} strategy tree nodes")
 
+    def load_embeddings(self, embeddings: dict[str, list[tuple[str, list[float]]]]) -> None:
+        """Load embeddings built during Prep instead of recomputing at realtime init."""
+        self._embeddings = embeddings
+
     def match_utterance(self, utterance_embedding: list[float], threshold: float = 0.45) -> tuple[str | None, str | None, float]:
         """匹配 utterance 到最相似的策略树节点。
 

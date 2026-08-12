@@ -46,3 +46,6 @@ jobs:
 
       - name: 构建前端(vite build,拦语法错误/坏 import/漏装依赖)
         run: npm run build
+
+      - name: 运行前端单元测试
+        run: npm run test

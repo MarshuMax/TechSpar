@@ -137,6 +137,8 @@ class CopilotPrepState(TypedDict, total=False):
     jd_text: str
     resume_context: str
     profile: dict
+    document_ids: list[str]
+    candidate_context: dict
 
     # Layer 0: 并行 Analyst 产出
     company_report: str
@@ -149,6 +151,8 @@ class CopilotPrepState(TypedDict, total=False):
     # Layer 2: Risk Assessor
     risk_map: list[dict]
     prep_hints: list[dict]
+    risk_summary: str
+    compiled_knowledge: dict
 
     # Prep 状态追踪
     status: str              # "running" | "done" | "error"
@@ -160,6 +164,10 @@ class CopilotPrepRequest(BaseModel):
     jd_text: str
     company: str | None = None
     position: str | None = None
+
+
+class CopilotTestMatchRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
 
 
 # ── Settings Models ──
