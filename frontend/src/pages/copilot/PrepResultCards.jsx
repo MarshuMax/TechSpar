@@ -12,16 +12,28 @@ import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useEffect, useState } from "react";
-import { getCopilotPreparedAnswers } from "../../api/copilot";
+import { getCopilotPreparedAnswers, listCopilotSessions, updateCopilotPreparedAnswer } from "../../api/copilot";
 import PreparedAnswersView from "./PreparedAnswersView";
 
 export default function PrepResultCards({ status, prepId }) {
   const [knowledge, setKnowledge] = useState(null);
   const [knowledgeError, setKnowledgeError] = useState("");
+  const [sessions, setSessions] = useState([]);
   useEffect(() => {
     if (!prepId || !status.compiled_knowledge_summary) return;
     getCopilotPreparedAnswers(prepId).then(setKnowledge).catch((error) => setKnowledgeError(error.message));
   }, [prepId, status.compiled_knowledge_summary]);
+  useEffect(() => {
+    if (!prepId) return;
+    listCopilotSessions(prepId).then(setSessions).catch(() => {});
+  }, [prepId]);
+  const saveAnswer = async (answerId, changes) => {
+    const updated = await updateCopilotPreparedAnswer(prepId, answerId, changes);
+    setKnowledge((current) => ({
+      ...current,
+      prepared_answers: { ...current.prepared_answers, [answerId]: updated },
+    }));
+  };
   const fitReport = status.fit_report || {};
   const riskMap = status.risk_map || [];
   const jdAnalysis = status.jd_analysis || {};
@@ -121,7 +133,23 @@ export default function PrepResultCards({ status, prepId }) {
       )}
 
       {status.compiled_knowledge_summary && (
-        <PreparedAnswersView knowledge={knowledge} error={knowledgeError} loading={!knowledge && !knowledgeError} />
+        <PreparedAnswersView knowledge={knowledge} error={knowledgeError} loading={!knowledge && !knowledgeError} onSave={saveAnswer} />
+      )}
+
+      {sessions.length > 0 && (
+        <Card className="border-border/80">
+          <CardContent className="p-5 md:p-6">
+            <div className="font-semibold">历史面试记录</div>
+            <div className="mt-3 space-y-2">
+              {sessions.map((session) => (
+                <div key={session.session_id} className="flex items-center justify-between rounded-xl border border-border/70 px-3 py-2 text-sm">
+                  <span>{new Date(session.started_at).toLocaleString()}</span>
+                  <Badge variant={session.status === "active" ? "green" : "secondary"}>{session.status}</Badge>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       <div className="grid gap-5 xl:grid-cols-2">

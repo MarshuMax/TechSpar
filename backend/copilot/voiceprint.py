@@ -25,8 +25,8 @@ _API_VERSION = "2019-06-14"
 _REGION = "ap-shanghai"
 _ENDPOINT = "asr.tencentcloudapi.com"
 
-# 音频格式枚举（腾讯云 VPR）：0=wav, 1=mp3, 2=m4a（我们统一走 wav）
-_VOICE_FORMAT_WAV = 0
+# 腾讯云 VPR VoiceFormat 枚举：0=pcm, 1=wav。我们统一发送 WAV。
+_VOICE_FORMAT_WAV = 1
 _SAMPLE_RATE_16K = 16000
 
 
@@ -152,7 +152,6 @@ class VoiceprintClient:
             "SampleRate": _SAMPLE_RATE_16K,
             "SpeakerNick": speaker_nick,
             "Data": data_b64,
-            "DataLength": len(wav_bytes),
         }
         try:
             resp = await self._call("VoicePrintEnroll", params)
@@ -185,7 +184,6 @@ class VoiceprintClient:
             "VoiceFormat": _VOICE_FORMAT_WAV,
             "SampleRate": _SAMPLE_RATE_16K,
             "Data": data_b64,
-            "DataLength": len(wav_bytes),
         }
         try:
             resp = await self._call("VoicePrintVerify", params)

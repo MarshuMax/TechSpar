@@ -9,6 +9,10 @@ from backend.models import VoiceprintCredentials
 
 router = APIRouter(prefix="/api")
 
+_VOICEPRINT_BYTES_PER_SECOND = 16000 * 2  # 16 kHz, mono, 16-bit PCM
+_VOICEPRINT_MIN_SECONDS = 6
+_VOICEPRINT_MAX_SECONDS = 30
+
 
 @router.get("/voiceprint/status")
 def voiceprint_status(user_id: str = Depends(get_current_user)):
@@ -62,8 +66,10 @@ async def voiceprint_enroll(
     except ValueError as exc:
         raise HTTPException(400, f"WAV 解析失败：{exc}")
 
-    if len(pcm_bytes) < 64000:
-        raise HTTPException(400, "录音太短，至少 2 秒")
+    if len(pcm_bytes) < _VOICEPRINT_MIN_SECONDS * _VOICEPRINT_BYTES_PER_SECOND:
+        raise HTTPException(400, f"录音太短，至少 {_VOICEPRINT_MIN_SECONDS} 秒")
+    if len(pcm_bytes) > _VOICEPRINT_MAX_SECONDS * _VOICEPRINT_BYTES_PER_SECOND:
+        raise HTTPException(400, f"录音太长，不能超过 {_VOICEPRINT_MAX_SECONDS} 秒")
 
     speaker_nick = f"techspar_{user_id}"
     voice_print_id = await client.enroll(speaker_nick, pcm_bytes)

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from backend.config import settings
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 EXCLUDE_DIR_NAMES = {".index_cache", "__pycache__"}
 SENSITIVE_USER_FILENAMES = {"provider.json", "voiceprint.json"}
 
@@ -74,6 +74,36 @@ CREATE TABLE IF NOT EXISTS personal_conversations (
 )
 """
 
+_COPILOT_PREPS_DDL = """
+CREATE TABLE IF NOT EXISTS copilot_preps (
+    prep_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, company TEXT DEFAULT '',
+    position TEXT DEFAULT '', jd_text TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'running',
+    progress TEXT DEFAULT '', error TEXT DEFAULT '', result TEXT DEFAULT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP, document_ids TEXT NOT NULL DEFAULT '[]',
+    source_snapshot TEXT NOT NULL DEFAULT '[]', materials TEXT NOT NULL DEFAULT '[]',
+    parent_prep_id TEXT DEFAULT NULL, knowledge_version INTEGER NOT NULL DEFAULT 1
+)
+"""
+
+_COPILOT_SESSIONS_DDL = """
+CREATE TABLE IF NOT EXISTS copilot_sessions (
+    session_id TEXT PRIMARY KEY, prep_id TEXT NOT NULL, user_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active', knowledge_version INTEGER NOT NULL DEFAULT 1,
+    started_at TEXT NOT NULL, ended_at TEXT
+)
+"""
+
+_COPILOT_TURNS_DDL = """
+CREATE TABLE IF NOT EXISTS copilot_turns (
+    turn_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, prep_id TEXT NOT NULL,
+    user_id TEXT NOT NULL, seq INTEGER NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL,
+    answer TEXT DEFAULT '', route TEXT DEFAULT '', node_id TEXT, anchor_id TEXT,
+    answer_id TEXT, score REAL, sources TEXT NOT NULL DEFAULT '[]',
+    latency TEXT NOT NULL DEFAULT '{}', fallback_reason TEXT DEFAULT '', created_at TEXT NOT NULL,
+    UNIQUE(session_id, seq, role)
+)
+"""
+
 # Personal archives deliberately use a table whitelist. Derived vector/index tables,
 # users/password hashes, and other accounts' data never enter a single-user backup.
 _PERSONAL_DB_TABLES = {
@@ -86,6 +116,9 @@ _PERSONAL_DB_TABLES = {
         "ddl": _PERSONAL_CONVERSATIONS_DDL,
         "primary_key": "conversation_id",
     },
+    "copilot_preps": {"ddl": _COPILOT_PREPS_DDL, "primary_key": "prep_id"},
+    "copilot_sessions": {"ddl": _COPILOT_SESSIONS_DDL, "primary_key": "session_id"},
+    "copilot_turns": {"ddl": _COPILOT_TURNS_DDL, "primary_key": "turn_id"},
 }
 
 

@@ -16,9 +16,12 @@ _ADVISE_PROMPT = """你是一个面试教练，正在实时辅助候选人。HR 
 候选人背景亮点: {highlights}
 候选人弱点提醒: {weak_points}
 已知回答要点参考: {key_points}
+本轮从候选人已选资料检索出的证据（只能据此陈述个人经历）:
+{grounding}
 
 要求：
-- 结合对话上下文和候选人背景，写一段完整的示例答案，200字以内，自然口语化
+- 结合对话上下文和候选人背景，写一段完整的示例答案，自然口语化；默认中文约 250-450 字
+- 如果 HR 明确要求“详细说/展开说”，写约 450-650 字；如果明确要求简短，写约 100-160 字
 - 如果 HR 是在追问或要求展开，答案要衔接候选人之前说过的内容，不要重复
 - 如涉及弱点领域，答案中要有合理引导和转移
 - 直接输出一段完整的回答
@@ -42,6 +45,7 @@ def prepare_advice_context(
     navigator: StrategyTreeNavigator,
     prep_state: dict,
     conversation: list[dict] | None = None,
+    grounding: str = "本轮没有检索到已选资料证据；不得编造候选人经历",
 ) -> dict:
     """预处理策略树上下文，返回 risk_alert 和构建好的 prompt。"""
     risk_alert = None
@@ -86,14 +90,19 @@ def prepare_advice_context(
         weak_points=weak_text,
         key_points="; ".join(key_points[:5]) or "无",
         conversation_section=conversation_section,
+        grounding=grounding[:8000],
     )
     return {"prompt": prompt, "risk_alert": risk_alert}
 
 
 async def stream_advice(prompt: str) -> AsyncIterator[dict]:
     """流式调用 LLM。yield dict: {"type": "chunk", "text": ...} 或 {"type": "meta", ...}。"""
-    llm = get_copilot_llm(streaming=True)
-    logger.info(f"Answer Coach streaming: model={llm.model_name}")
+    llm = get_copilot_llm(streaming=True, fast_mode=True)
+    logger.info(
+        "Answer Coach streaming: model=%s service_tier=%s",
+        llm.model_name,
+        llm.service_tier,
+    )
     t0 = time.monotonic()
     chunk_count = 0
     first_token_ms = None

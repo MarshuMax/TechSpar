@@ -151,7 +151,10 @@ class DataExportIsolationTests(unittest.TestCase):
 
             self.assertEqual(
                 tables,
-                {"sessions", "personal_documents", "personal_conversations"},
+                {
+                    "sessions", "personal_documents", "personal_conversations",
+                    "copilot_preps", "copilot_sessions", "copilot_turns",
+                },
             )
             self.assertEqual(rows, [("mine", "user-a")])
             self.assertEqual(documents, [("doc-mine", "user-a")])

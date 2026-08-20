@@ -170,6 +170,14 @@ class CopilotTestMatchRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
 
 
+class CopilotPreparedAnswerPatch(BaseModel):
+    prepared_answer: str | None = Field(default=None, min_length=1, max_length=8000)
+    expanded_answer: str | None = Field(default=None, min_length=1, max_length=12000)
+    short_answer: str | None = Field(default=None, min_length=1, max_length=4000)
+    question_variants: list[str] | None = Field(default=None, max_length=12)
+    expected_version: int | None = Field(default=None, ge=1)
+
+
 # ── Settings Models ──
 
 class UserSettings(BaseModel):

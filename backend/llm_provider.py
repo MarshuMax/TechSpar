@@ -123,8 +123,17 @@ def get_langchain_llm(user_id: str | None = None):
     )
 
 
-def get_copilot_llm(user_id: str | None = None, streaming: bool = False):
-    """Copilot uses the user's own main LLM (no separate Copilot provider)."""
+def get_copilot_llm(
+    user_id: str | None = None,
+    streaming: bool = False,
+    fast_mode: bool = False,
+):
+    """Copilot uses the user's own main LLM (no separate Copilot provider).
+
+    ``fast_mode`` requests the OpenAI/CLIProxy priority service tier. It is kept
+    opt-in so latency-sensitive realtime answers can be accelerated without
+    charging priority capacity for offline knowledge compilation.
+    """
     c = resolve_llm_config(user_id)
     _require_llm(c)
     return ChatOpenAI(
@@ -133,6 +142,7 @@ def get_copilot_llm(user_id: str | None = None, streaming: bool = False):
         base_url=c["api_base"],
         temperature=_COPILOT_TEMPERATURE,
         streaming=streaming,
+        service_tier="priority" if fast_mode else None,
     )
 
 

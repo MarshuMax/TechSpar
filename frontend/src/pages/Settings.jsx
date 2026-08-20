@@ -43,6 +43,7 @@ import { Card, CardContent } from "@/components/ui/card";
 // 录音参数
 const VP_SAMPLE_RATE = 16000;
 const VP_MIN_SECONDS = 6;
+const VP_MAX_SECONDS = 15;
 
 // ── WAV / PCM 工具（用于声纹录音上传）──
 
@@ -181,6 +182,7 @@ export default function Settings() {
   const vpChunksRef = useRef([]);
   const vpInputRateRef = useRef(VP_SAMPLE_RATE);
   const vpTimerRef = useRef(null);
+  const vpStopRef = useRef(null);
 
   // Section refs for scrollspy
   const llmRef = useRef(null);
@@ -362,7 +364,13 @@ export default function Settings() {
       setVpRecordingSec(0);
       const t0 = Date.now();
       vpTimerRef.current = setInterval(() => {
-        setVpRecordingSec((Date.now() - t0) / 1000);
+        const elapsed = (Date.now() - t0) / 1000;
+        setVpRecordingSec(Math.min(elapsed, VP_MAX_SECONDS));
+        if (elapsed >= VP_MAX_SECONDS) {
+          clearInterval(vpTimerRef.current);
+          vpTimerRef.current = null;
+          void vpStopRef.current?.(VP_MAX_SECONDS);
+        }
       }, 200);
     } catch (err) {
       cleanupRecorder();
@@ -370,10 +378,10 @@ export default function Settings() {
     }
   };
 
-  const stopVpRecording = async () => {
+  const stopVpRecording = async (secondsOverride) => {
     const chunks = vpChunksRef.current;
     const inputRate = vpInputRateRef.current;
-    const seconds = vpRecordingSec;
+    const seconds = typeof secondsOverride === "number" ? secondsOverride : vpRecordingSec;
     cleanupRecorder();
 
     if (seconds < VP_MIN_SECONDS) {
@@ -396,6 +404,7 @@ export default function Settings() {
       setVpBusy(false);
     }
   };
+  vpStopRef.current = stopVpRecording;
 
   const handleDeleteEnrollment = async () => {
     setVpBusy(true);
@@ -1104,8 +1113,8 @@ export default function Settings() {
                 <Label className={labelClass}>候选人声纹</Label>
                 <div className="text-[12px] text-dim/70 mt-1 mb-3">
                   {vpRecording
-                    ? `录音中：${vpRecordingSec.toFixed(1)} 秒`
-                    : `建议连续说话 ≥ ${VP_MIN_SECONDS} 秒，单人、安静环境`}
+                    ? `录音中：${vpRecordingSec.toFixed(1)} / ${VP_MAX_SECONDS} 秒，到时自动上传`
+                    : `请连续说话 ${VP_MIN_SECONDS}–${VP_MAX_SECONDS} 秒，单人、安静环境`}
                 </div>
                 <div className="flex flex-wrap gap-3">
                   {vpRecording ? (

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatFileSize } from "./shared";
 
-export default function MaterialSelector({ value = [], onChange, disabled = false }) {
+export default function MaterialSelector({ value = [], onChange, roles = {}, onRolesChange = () => {}, disabled = false }) {
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -32,9 +32,12 @@ export default function MaterialSelector({ value = [], onChange, disabled = fals
 
   const toggle = (documentId) => {
     if (disabled) return;
-    onChange(value.includes(documentId)
-      ? value.filter((item) => item !== documentId)
-      : [...value, documentId]);
+    if (value.includes(documentId)) {
+      onChange(value.filter((item) => item !== documentId));
+    } else {
+      onChange([...value, documentId]);
+      onRolesChange({ ...roles, [documentId]: roles[documentId] || "supporting_material" });
+    }
   };
 
   const handleUpload = async (file) => {
@@ -46,6 +49,7 @@ export default function MaterialSelector({ value = [], onChange, disabled = fals
       setDocuments((items) => [document, ...items.filter((item) => item.document_id !== document.document_id)]);
       if (document.status === "ready" && !value.includes(document.document_id)) {
         onChange([...value, document.document_id]);
+        onRolesChange({ ...roles, [document.document_id]: "supporting_material" });
       }
       else setError(document.error || "资料尚未完成索引，暂不能选择");
     } catch (err) {
@@ -104,6 +108,7 @@ export default function MaterialSelector({ value = [], onChange, disabled = fals
                   disabled={disabled || !ready}
                   onChange={() => toggle(document.document_id)}
                   className="h-4 w-4 accent-primary"
+                  aria-label={`选择 ${document.filename}`}
                 />
                 <FileText size={17} className={checked ? "text-primary" : "text-dim"} />
                 <div className="min-w-0 flex-1">
@@ -112,6 +117,19 @@ export default function MaterialSelector({ value = [], onChange, disabled = fals
                     {formatFileSize(document.size_bytes)} · {ready ? `${document.chunk_count} 个资料片段` : document.status}
                   </div>
                 </div>
+                {checked && ready && (
+                  <select
+                    value={roles[document.document_id] || "supporting_material"}
+                    disabled={disabled}
+                  onChange={(event) => onRolesChange({ ...roles, [document.document_id]: event.target.value })}
+                    onClick={(event) => event.stopPropagation()}
+                    className="rounded-lg border border-border/70 bg-background px-2 py-1 text-xs"
+                    aria-label={`${document.filename} 资料角色`}
+                  >
+                    <option value="authoritative_script">权威讲稿</option>
+                    <option value="supporting_material">辅助资料</option>
+                  </select>
+                )}
                 {!ready && <Badge variant="secondary">不可用</Badge>}
               </label>
             );

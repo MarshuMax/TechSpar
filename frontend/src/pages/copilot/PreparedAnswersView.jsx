@@ -5,8 +5,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
-export default function PreparedAnswersView({ knowledge, loading = false, error = "" }) {
+export default function PreparedAnswersView({ knowledge, loading = false, error = "", onSave }) {
   const [expanded, setExpanded] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [draft, setDraft] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   if (loading) return <div className="rounded-2xl border border-border/70 p-5 text-sm text-dim">正在读取预编译问答...</div>;
   if (error) return <div className="rounded-2xl border border-red/20 bg-red/8 p-4 text-sm text-red">{error}</div>;
   if (!knowledge) return null;
@@ -21,7 +25,7 @@ export default function PreparedAnswersView({ knowledge, loading = false, error 
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/12 text-primary"><BookOpenCheck size={18} /></div>
             <div>
               <div className="font-semibold">Interview Knowledge Package</div>
-              <div className="mt-0.5 text-xs text-dim">面试前生成，只读校对；修改资料后请重新准备。</div>
+              <div className="mt-0.5 text-xs text-dim">可在面试前校对并编辑；只重建当前答案的问题索引。</div>
             </div>
           </div>
           <Badge variant={knowledge.index_status === "ready" ? "green" : "secondary"}>
@@ -56,10 +60,46 @@ export default function PreparedAnswersView({ knowledge, loading = false, error 
                 </button>
                 {open && (
                   <div className="space-y-4 border-t border-border/60 px-4 py-4">
+                    {editing === answer.answer_id ? (
+                      <div className="space-y-3">
+                        <label className="block text-xs font-semibold text-dim">主答案（250-450 字）</label>
+                        <textarea className="min-h-40 w-full rounded-xl border border-border bg-background p-3 text-sm leading-6" value={draft.prepared_answer || ""} onChange={(event) => setDraft({ ...draft, prepared_answer: event.target.value })} />
+                        <label className="block text-xs font-semibold text-dim">展开答案（450-650 字）</label>
+                        <textarea className="min-h-48 w-full rounded-xl border border-border bg-background p-3 text-sm leading-6" value={draft.expanded_answer || ""} onChange={(event) => setDraft({ ...draft, expanded_answer: event.target.value })} />
+                        <label className="block text-xs font-semibold text-dim">短答案（100-160 字）</label>
+                        <textarea className="min-h-28 w-full rounded-xl border border-border bg-background p-3 text-sm leading-6" value={draft.short_answer || ""} onChange={(event) => setDraft({ ...draft, short_answer: event.target.value })} />
+                        <label className="block text-xs font-semibold text-dim">匹配问法（每行一个）</label>
+                        <textarea className="min-h-28 w-full rounded-xl border border-border bg-background p-3 text-sm leading-6" value={draft.question_variants || ""} onChange={(event) => setDraft({ ...draft, question_variants: event.target.value })} />
+                        {saveError && <div className="text-xs text-red">{saveError}</div>}
+                        <div className="flex gap-2">
+                          <Button size="sm" disabled={saving} onClick={async () => {
+                            setSaving(true); setSaveError("");
+                            try {
+                              await onSave?.(answer.answer_id, {
+                                prepared_answer: draft.prepared_answer,
+                                expanded_answer: draft.expanded_answer,
+                                short_answer: draft.short_answer,
+                                question_variants: draft.question_variants.split("\n").map((value) => value.trim()).filter(Boolean),
+                                expected_version: answer.edit_version || 1,
+                              });
+                              setEditing(null);
+                            } catch (error) { setSaveError(error.message); }
+                            finally { setSaving(false); }
+                          }}>{saving ? "保存中..." : "保存并更新索引"}</Button>
+                          <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>取消</Button>
+                        </div>
+                      </div>
+                    ) : <>
                     <div>
                       <div className="text-[10px] font-semibold uppercase tracking-wider text-dim">主答案</div>
                       <p className="mt-2 whitespace-pre-wrap text-sm leading-7">{answer.prepared_answer}</p>
                     </div>
+                    {answer.expanded_answer && answer.expanded_answer !== answer.prepared_answer && (
+                      <div>
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-dim">展开答案</div>
+                        <p className="mt-2 whitespace-pre-wrap text-sm leading-7">{answer.expanded_answer}</p>
+                      </div>
+                    )}
                     {answer.short_answer && (
                       <div className="rounded-xl bg-primary/5 px-3 py-3">
                         <div className="text-[10px] font-semibold uppercase tracking-wider text-primary/70">短答案</div>
@@ -84,6 +124,17 @@ export default function PreparedAnswersView({ knowledge, loading = false, error 
                         <ShieldAlert size={13} /> {warning}
                       </div>
                     ))}
+                    {onSave && <Button size="sm" variant="outline" onClick={() => {
+                      setDraft({
+                        prepared_answer: answer.prepared_answer || "",
+                        expanded_answer: answer.expanded_answer || answer.prepared_answer || "",
+                        short_answer: answer.short_answer || "",
+                        question_variants: (answer.question_variants || []).join("\n"),
+                      });
+                      setSaveError("");
+                      setEditing(answer.answer_id);
+                    }}>编辑答案</Button>}
+                    </>}
                   </div>
                 )}
               </div>

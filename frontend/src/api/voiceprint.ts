@@ -39,7 +39,10 @@ export async function enrollVoiceprint(
     method: "POST",
     body: form,
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail || `声纹注册失败（HTTP ${res.status}）`);
+  }
   return res.json();
 }
 

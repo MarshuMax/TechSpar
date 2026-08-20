@@ -75,14 +75,16 @@ KNOWLEDGE_COMPILER_PROMPT = """你正在把候选人的面试资料编译成可�
 2. 不得把理论知识改写成候选人的工作经历。
 3. 只有证据明确支持时才能使用“我做过/我负责”的表述。
 4. 证据不足时给出保守回答，明确区分实际经历与知识理解。
-5. 回答要自然、适合口述；主答案控制在约 60-120 秒，短答案控制在约 20-30 秒。
+5. 回答要自然、适合口述；主答案为完整中等长度答案（中文约 250-450 字），展开答案约 450-650 字，短答案约 100-160 字。
 6. personal_document 引用的 document_id 必须来自上方资料标签；不要杜撰来源。
 7. 生成 3-8 个真正语义相近的中英文问法，不要仅替换标点。
+8. authoritative_script 是候选人确认过的口述稿：事实、叙事顺序和关键措辞优先遵循它；supporting_material 只用于补充证据，冲突时不得覆盖权威稿。
 
 输出严格 JSON：
 {{
   "question_variants": ["问法1", "问法2"],
   "prepared_answer": "主答案",
+  "expanded_answer": "面试官要求详细展开时使用的答案",
   "short_answer": "短答案",
   "key_points": ["要点"],
   "source_refs": [
@@ -115,6 +117,9 @@ HR_STRATEGY_PROMPT = """你是一位资深技术面试官，正在为 {role_titl
 ### 本次明确选择的个人面试资料
 {material_context}
 
+### 从已选资料归并出的项目锚点
+{project_anchors}
+
 ## 任务
 
 生成一棵 **提问策略树**，模拟 HR 视角的提问路径：
@@ -128,6 +133,7 @@ HR_STRATEGY_PROMPT = """你是一位资深技术面试官，正在为 {role_titl
 7. technical 方向的入口节点数量与 JD 权重成正比
 8. 每个考察维度至少包含 2-3 个追问分支
 9. 项目与技术细节必须以简历和本次所选资料为依据；不要引入资料中不存在的候选人经历
+10. 每个项目锚点必须覆盖：项目总览、架构方案、个人职责、难点解决、技术取舍、结果复盘；节点需携带 anchor_id、answer_kind、project_name、document_ids
 
 输出严格 JSON:
 {{
@@ -143,6 +149,10 @@ HR_STRATEGY_PROMPT = """你是一位资深技术面试官，正在为 {role_titl
       "children": ["子节点ID"],
       "trigger_condition": "什么回答会触发这个追问",
       "recommended_points": ["建议回答要点1", "要点2"]
+      ,"anchor_id": "项目锚点ID（非项目节点为空）"
+      ,"answer_kind": "overview|architecture|role|challenge|tradeoff|result"
+      ,"project_name": "项目名"
+      ,"document_ids": ["该项目证据资料ID"]
     }}
   }},
   "phase_order": ["greeting", "self_intro", "technical", "project_deep_dive", "behavioral", "reverse_qa"]

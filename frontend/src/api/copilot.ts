@@ -25,6 +25,7 @@ interface StartCopilotPrepOptions {
   company?: string;
   position?: string;
   documentIds?: string[];
+  materials?: Array<{ document_id: string; role: "authoritative_script" | "supporting_material" }>;
 }
 
 export interface PreparedKnowledge {
@@ -51,12 +52,14 @@ export async function startCopilotPrep({
   company,
   position,
   documentIds = [],
+  materials = [],
 }: StartCopilotPrepOptions): Promise<ApiResponse<"/api/copilot/prep", "post">> {
   const form = new FormData();
   form.append("jd_text", jdText);
   if (company) form.append("company", company);
   if (position) form.append("position", position);
   form.append("document_ids", JSON.stringify(documentIds));
+  form.append("materials", JSON.stringify(materials));
 
   const res = await authFetch(`${API_BASE}/copilot/prep`, {
     method: "POST",
@@ -80,6 +83,45 @@ export async function getCopilotStrategyTree(
   prepId: string
 ): Promise<ApiResponse<"/api/copilot/prep/{prep_id}/tree", "get">> {
   const res = await authFetch(`${API_BASE}/copilot/prep/${prepId}/tree`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function recompileCopilotPrep(
+  prepId: string,
+  materials: Array<{ document_id: string; role: "authoritative_script" | "supporting_material" }>,
+): Promise<{ prep_id: string; knowledge_version: number }> {
+  const res = await authFetch(`${API_BASE}/copilot/prep/${prepId}/recompile`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ document_ids: materials.map((item) => item.document_id), materials }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function updateCopilotPreparedAnswer(
+  prepId: string,
+  answerId: string,
+  changes: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const res = await authFetch(`${API_BASE}/copilot/prep/${prepId}/prepared-answers/${answerId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(changes),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function listCopilotSessions(prepId: string): Promise<Array<Record<string, unknown>>> {
+  const res = await authFetch(`${API_BASE}/copilot/prep/${prepId}/sessions`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getCopilotSession(sessionId: string): Promise<Record<string, unknown>> {
+  const res = await authFetch(`${API_BASE}/copilot/sessions/${sessionId}`);
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }

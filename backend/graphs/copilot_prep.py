@@ -21,6 +21,7 @@ from backend.copilot.prompts import (
     RISK_ASSESSOR_PROMPT,
 )
 from backend.copilot.strategy_tree import parse_strategy_tree
+from backend.copilot.project_anchors import ensure_project_anchor_nodes
 
 logger = logging.getLogger("uvicorn")
 
@@ -93,12 +94,15 @@ async def _run_hr_strategy(
             str(candidate_context.get("material_context", ""))[:8000]
             or "本次未选择个人面试资料"
         ),
+        project_anchors=json.dumps(candidate_context.get("project_anchors", []), ensure_ascii=False)[:6000],
     )
     resp = await llm.ainvoke([
         SystemMessage(content="你是面试策略引擎。只返回 JSON。"),
         HumanMessage(content=prompt),
     ])
-    return parse_strategy_tree(resp.content)
+    return ensure_project_anchor_nodes(
+        parse_strategy_tree(resp.content), candidate_context.get("project_anchors", [])
+    )
 
 
 async def _run_risk_assessor(
@@ -147,6 +151,7 @@ async def run_copilot_prep(
     company: str = "",
     position: str = "",
     document_ids: list[str] | None = None,
+    materials: list[dict] | None = None,
     prep_id: str = "",
     on_progress=None,
 ) -> dict:
@@ -174,7 +179,7 @@ async def run_copilot_prep(
     company_task = asyncio.create_task(_run_company_researcher(company, position))
     jd_task = asyncio.create_task(_run_jd_analyst(jd_text))
     context_task = asyncio.create_task(build_candidate_context(
-        user_id=user_id, jd_text=jd_text, document_ids=document_ids,
+        user_id=user_id, jd_text=jd_text, document_ids=document_ids, materials=materials,
     ))
 
     company_report, jd_analysis, candidate_context = await asyncio.gather(
@@ -211,6 +216,7 @@ async def run_copilot_prep(
         prep_hints=prep_hints,
         user_id=user_id,
         document_ids=document_ids,
+        materials=materials or [],
         on_progress=compiler_progress,
     )
 
@@ -237,6 +243,7 @@ async def run_copilot_prep(
         "resume_context": candidate_context.get("resume_context", ""),
         "profile": profile,
         "document_ids": document_ids,
+        "materials": materials or [],
         "candidate_context": candidate_context,
         "company_report": company_report,
         "jd_analysis": jd_analysis,

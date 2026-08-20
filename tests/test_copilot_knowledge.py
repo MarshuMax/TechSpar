@@ -13,9 +13,11 @@ import numpy as np
 from backend import personal_agent, vector_memory
 from backend.config import settings
 from backend.copilot import knowledge_compiler, prepared_answer_index, prepared_answer_matcher
+from backend.copilot.project_anchors import ensure_project_anchor_nodes
 from backend.graphs import copilot_prep as prep_graph
 from backend.routers import copilot
 from backend.storage import copilot_preps
+from backend.storage import copilot_sessions
 
 
 class _FakeEmbedding:
@@ -38,6 +40,7 @@ class CopilotKnowledgeStorageTests(unittest.TestCase):
             patch.object(settings, "db_path", self.db_path),
             patch.object(vector_memory, "DB_PATH", self.db_path),
             patch.object(copilot_preps, "DB_PATH", self.db_path),
+            patch.object(copilot_sessions, "DB_PATH", self.db_path),
             patch.object(personal_agent, "get_embedding", return_value=_FakeEmbedding()),
             patch.object(vector_memory, "get_embedding", return_value=_FakeEmbedding()),
             patch.object(prepared_answer_index, "get_embedding", return_value=_FakeEmbedding()),
@@ -66,6 +69,16 @@ class CopilotKnowledgeStorageTests(unittest.TestCase):
         self.assertEqual({hit["document_id"] for hit in selected}, {first["document_id"]})
         with self.assertRaisesRegex(ValueError, "不存在或无权访问"):
             personal_agent.get_documents_by_ids([foreign["document_id"]], "user-a", require_ready=True)
+
+    def test_balanced_search_keeps_every_selected_document_and_chunk_evidence(self):
+        first = personal_agent.create_document("Rchain-project-overview.md", b"Rchain architecture overview", "user-a")
+        second = personal_agent.create_document("behavior.md", b"team conflict story", "user-a")
+        hits = personal_agent.search_documents(
+            "Rchain architecture", "user-a", top_k=2,
+            document_ids=[first["document_id"], second["document_id"]], min_per_document=1,
+        )
+        self.assertEqual({item["document_id"] for item in hits}, {first["document_id"], second["document_id"]})
+        self.assertTrue(all(item["chunk_id"] and len(item["content_hash"]) == 64 for item in hits))
 
     def test_memory_schema_migrates_user_id_before_creating_scoped_indexes(self):
         with sqlite3.connect(self.db_path) as conn:
@@ -151,6 +164,49 @@ class CopilotKnowledgeStorageTests(unittest.TestCase):
             compiled_knowledge=compiled,
         )["matched"])
 
+    def test_rchain_alias_routes_to_overview_without_embedding(self):
+        tree = {"nodes": {"rchain-overview": {
+            "topic": "Rchain overview", "sample_questions": ["介绍 Rchain"],
+        }}}
+        answer = {
+            "answer_id": "pa-rchain", "node_id": "rchain-overview", "topic": "Rchain",
+            "anchor_id": "anchor-rchain", "answer_kind": "overview",
+            "question_variants": ["Tell me about Rchain"],
+            "prepared_answer": "Rchain 是我的项目。", "expanded_answer": "Rchain 的完整项目介绍。",
+            "short_answer": "Rchain 项目。", "source_refs": [], "usable": True,
+        }
+        compiled = {
+            "prepared_answers": {"pa-rchain": answer},
+            "project_anchors": [{
+                "anchor_id": "anchor-rchain", "project_name": "Rchain",
+                "aliases": ["Rchain", "R Chain"], "document_ids": ["doc-rchain"],
+            }],
+        }
+        prepared_answer_index.build_prepared_answer_index(
+            prep_id="wireless-car", user_id="user-a", strategy_tree=tree, compiled_knowledge=compiled,
+        )
+        snapshot = prepared_answer_index.load_prepared_index_snapshot("wireless-car", "user-a", compiled)
+        hit = prepared_answer_matcher.match_alias_prepared_answer(
+            snapshot=snapshot, compiled_knowledge=compiled,
+            utterance_text="介绍下 Rchain 这个项目",
+        )
+        self.assertEqual(hit["answer_id"], "pa-rchain")
+        self.assertEqual(hit["reason"], "project_alias")
+
+    def test_copilot_session_persists_final_displayed_answer_and_routing(self):
+        copilot_sessions.start_session("session-1", "prep-1", "user-a", 2)
+        copilot_sessions.create_turn("turn-1", "session-1", "prep-1", "user-a", 1, "hr", "介绍 Rchain")
+        copilot_sessions.complete_turn(
+            "turn-1", "user-a", answer="完整 Rchain 回答", route="prepared",
+            node_id="rchain-overview", answer_id="pa-rchain", score=1.0,
+            sources=[{"document_id": "doc-rchain", "chunk_id": "42"}],
+            latency={"total_ms": 8},
+        )
+        loaded = copilot_sessions.get_session("session-1", "user-a")
+        self.assertEqual(loaded["turns"][0]["answer"], "完整 Rchain 回答")
+        self.assertEqual(loaded["turns"][0]["route"], "prepared")
+        self.assertEqual(loaded["turns"][0]["sources"][0]["chunk_id"], "42")
+
     def test_contextual_follow_up_prefers_previous_strategy_node(self):
         answers = {
             "pa-previous": {
@@ -198,6 +254,26 @@ class CopilotKnowledgeStorageTests(unittest.TestCase):
 
 
 class KnowledgeCompilerTests(unittest.TestCase):
+    def test_project_anchor_guarantees_six_connected_nodes(self):
+        tree = {"root_nodes": ["existing"], "nodes": {
+            "existing": {
+                "id": "existing", "topic": "Rchain 总览", "sample_questions": ["介绍 Rchain"],
+                "anchor_id": "anchor-rchain", "answer_kind": "overview", "children": [],
+            },
+        }}
+        result = ensure_project_anchor_nodes(tree, [{
+            "anchor_id": "anchor-rchain", "project_name": "Rchain",
+            "aliases": ["Rchain"], "document_ids": ["doc-rchain"],
+            "authoritative_document_ids": ["doc-rchain"],
+        }])
+        project_nodes = [
+            node for node in result["nodes"].values()
+            if node.get("anchor_id") == "anchor-rchain"
+        ]
+        self.assertEqual({node.get("answer_kind") for node in project_nodes}, {
+            "overview", "architecture", "role", "challenge", "tradeoff", "result",
+        })
+        self.assertEqual(len(result["nodes"]["existing"]["children"]), 5)
     def test_strategy_tree_prompt_receives_resume_and_selected_materials_directly(self):
         captured = {}
 

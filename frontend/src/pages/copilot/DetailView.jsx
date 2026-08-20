@@ -10,7 +10,7 @@ import {
   User,
 } from "lucide-react";
 
-import { getCopilotPrepStatus, startCopilotPrep } from "../../api/copilot";
+import { getCopilotPrepStatus, recompileCopilotPrep, startCopilotPrep } from "../../api/copilot";
 import { getProfile, getResumeStatus } from "../../api/interview";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -72,6 +72,7 @@ export default function DetailView({ prepId: initialPrepId, onBack, onStartInter
   const [position, setPosition] = useState("");
   const [jdText, setJdText] = useState("");
   const [documentIds, setDocumentIds] = useState([]);
+  const [documentRoles, setDocumentRoles] = useState({});
   const [resumeFile, setResumeFile] = useState(null);
   const [loadingResume, setLoadingResume] = useState(true);
   const [profile, setProfile] = useState(null);
@@ -118,6 +119,9 @@ export default function DetailView({ prepId: initialPrepId, onBack, onStartInter
         if (data.position) setPosition(data.position);
         if (data.jd_text) setJdText(data.jd_text);
         if (Array.isArray(data.document_ids)) setDocumentIds(data.document_ids);
+        if (Array.isArray(data.materials)) setDocumentRoles(Object.fromEntries(
+          data.materials.map((item) => [item.document_id, item.role])
+        ));
       } catch (error) {
         setError(error.message);
       }
@@ -151,9 +155,32 @@ export default function DetailView({ prepId: initialPrepId, onBack, onStartInter
     setError("");
     setSubmitting(true);
     try {
-      const { prep_id } = await startCopilotPrep({ jdText, company, position, documentIds });
+      const materials = documentIds.map((document_id) => ({
+        document_id,
+        role: documentRoles[document_id] || "supporting_material",
+      }));
+      const { prep_id } = await startCopilotPrep({ jdText, company, position, documentIds, materials });
       setPrepId(prep_id);
       setStatus({ status: "running", progress: "初始化中..." });
+    } catch (error) {
+      setError(error.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleRecompile = async () => {
+    if (!prepId || submitting) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const materials = documentIds.map((document_id) => ({
+        document_id,
+        role: documentRoles[document_id] || "supporting_material",
+      }));
+      const data = await recompileCopilotPrep(prepId, materials);
+      setPrepId(data.prep_id);
+      setStatus({ status: "running", progress: "正在创建新版知识包...", knowledge_version: data.knowledge_version });
     } catch (error) {
       setError(error.message);
     } finally {
@@ -251,7 +278,9 @@ export default function DetailView({ prepId: initialPrepId, onBack, onStartInter
                 <MaterialSelector
                   value={documentIds}
                   onChange={setDocumentIds}
-                  disabled={!!prepId}
+                  roles={documentRoles}
+                  onRolesChange={setDocumentRoles}
+                  disabled={isRunning}
                 />
 
                 <div className="mt-1 flex flex-col gap-1 rounded-2xl border border-border/40 bg-card/20 p-1.5">
@@ -384,9 +413,15 @@ export default function DetailView({ prepId: initialPrepId, onBack, onStartInter
                 )}
 
                 {isDone && (
-                  <Button variant="gradient" size="lg" className="w-full" onClick={() => onStartInterview(prepId, status)}>
-                    <Radio size={18} /> 开始面试辅助
-                  </Button>
+                  <>
+                    <Button variant="gradient" size="lg" className="w-full" onClick={() => onStartInterview(prepId, status)}>
+                      <Radio size={18} /> 开始面试辅助
+                    </Button>
+                    <Button variant="outline" className="w-full" disabled={submitting} onClick={handleRecompile}>
+                      {submitting ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                      重新编译为新版
+                    </Button>
+                  </>
                 )}
 
                 {isRunning && (

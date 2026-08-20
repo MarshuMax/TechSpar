@@ -6,6 +6,7 @@ chunks are a rebuildable cache in memory_vectors, scoped by user_id and document
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import logging
 import re
@@ -413,6 +414,9 @@ def search_documents(
     user_id: str,
     top_k: int = 6,
     document_ids: list[str] | None = None,
+    *,
+    query_embedding: list[float] | np.ndarray | None = None,
+    min_per_document: int = 0,
 ) -> list[dict]:
     """Search personal documents, optionally constrained to an explicit set.
 
@@ -423,7 +427,7 @@ def search_documents(
         return []
     conn = _get_vector_conn()
     sql = (
-        "SELECT content, session_id, metadata, embedding FROM memory_vectors "
+        "SELECT id, content, session_id, metadata, embedding FROM memory_vectors "
         "WHERE chunk_type = ? AND user_id = ?"
     )
     params: list[object] = [LIBRARY_CHUNK, user_id]
@@ -440,20 +444,43 @@ def search_documents(
     if not rows:
         return []
 
-    query_vector = _embed(query, user_id)
+    query_vector = (
+        np.asarray(query_embedding, dtype=np.float32)
+        if query_embedding is not None
+        else _embed(query, user_id)
+    )
     matrix = np.stack([_deserialize(row["embedding"]) for row in rows])
     similarities = _cosine_similarity(query_vector, matrix)
-    order = np.argsort(similarities)[::-1][:top_k]
+    ranked = [int(index) for index in np.argsort(similarities)[::-1]]
+    order: list[int] = []
+    coverage_indexes: set[int] = set()
+    if min_per_document > 0 and document_ids:
+        per_document: dict[str, int] = {}
+        for index in ranked:
+            document_id = rows[index]["session_id"]
+            if per_document.get(document_id, 0) >= min_per_document:
+                continue
+            order.append(index)
+            per_document[document_id] = per_document.get(document_id, 0) + 1
+        selected = set(order)
+        coverage_indexes = selected
+        order.extend(index for index in ranked if index not in selected)
+    else:
+        order = ranked
+    order = order[:top_k]
     results: list[dict] = []
     for index in order:
         score = float(similarities[index])
-        if score < 0.18:
+        if score < 0.18 and index not in coverage_indexes:
             continue
         metadata = json.loads(rows[index]["metadata"] or "{}")
+        content = rows[index]["content"]
         results.append({
+            "chunk_id": str(rows[index]["id"]),
             "document_id": rows[index]["session_id"],
             "source": metadata.get("source", "用户文档"),
-            "content": rows[index]["content"],
+            "content": content,
+            "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
             "score": round(score, 4),
         })
     return results

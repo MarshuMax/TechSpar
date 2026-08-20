@@ -36,6 +36,7 @@ def _normalize_compiled_answer(
     node_id: str,
     node: dict,
     selected_documents: dict[str, dict],
+    evidence_hits: list[dict],
 ) -> dict:
     variants = [
         str(value).strip()
@@ -45,6 +46,10 @@ def _normalize_compiled_answer(
     variants = list(dict.fromkeys([*(node.get("sample_questions") or []), *variants]))[:8]
     source_refs: list[dict] = []
     warnings = [str(item) for item in raw.get("warnings", []) if str(item).strip()]
+    first_hit_by_document = {
+        hit["document_id"]: hit for hit in evidence_hits
+        if isinstance(hit, dict) and hit.get("document_id")
+    }
     for source in raw.get("source_refs", []):
         if not isinstance(source, dict):
             continue
@@ -54,10 +59,14 @@ def _normalize_compiled_answer(
             if not document:
                 warnings.append("模型返回了未选择的资料引用，已移除")
                 continue
+            hit = first_hit_by_document.get(document["document_id"], {})
             source_refs.append({
                 "source_type": "personal_document",
                 "document_id": document["document_id"],
                 "filename": document["filename"],
+                "role": document.get("role", "supporting_material"),
+                "chunk_id": hit.get("chunk_id", ""),
+                "content_hash": hit.get("content_hash", ""),
                 "evidence": str(source.get("evidence", ""))[:500],
             })
         elif source_type in {"resume", "profile"}:
@@ -67,19 +76,25 @@ def _normalize_compiled_answer(
             })
 
     prepared_answer = str(raw.get("prepared_answer", "")).strip()
+    expanded_answer = str(raw.get("expanded_answer", "")).strip() or prepared_answer
     short_answer = str(raw.get("short_answer", "")).strip()
     return {
         "answer_id": _answer_id(node_id),
         "node_id": node_id,
         "topic": node.get("topic", ""),
         "intent": node.get("intent", "unknown"),
+        "anchor_id": node.get("anchor_id"),
+        "answer_kind": node.get("answer_kind"),
+        "project_name": node.get("project_name"),
         "question_variants": variants,
         "prepared_answer": prepared_answer,
+        "expanded_answer": expanded_answer,
         "short_answer": short_answer,
         "key_points": [str(item) for item in raw.get("key_points", []) if str(item).strip()][:8],
         "source_refs": source_refs,
         "confidence": max(0.0, min(1.0, float(raw.get("confidence", 0.0) or 0.0))),
         "usable": bool(prepared_answer and variants),
+        "edit_version": 1,
         "warnings": list(dict.fromkeys(warnings)),
     }
 
@@ -93,6 +108,7 @@ async def compile_strategy_tree(
     prep_hints: list[dict],
     user_id: str,
     document_ids: list[str],
+    materials: list[dict] | None = None,
     on_progress=None,
 ) -> dict:
     nodes = [
@@ -107,21 +123,39 @@ async def compile_strategy_tree(
     semaphore = asyncio.Semaphore(COMPILER_CONCURRENCY)
     completed = 0
     progress_lock = asyncio.Lock()
-
-    async def compile_one(node_id: str, node: dict) -> tuple[str, dict | None, str | None]:
-        nonlocal completed
+    node_hits: dict[str, list[dict]] = {}
+    # Retrieval uses a single selected-document boundary and is intentionally
+    # completed before concurrent LLM compilation. This avoids concurrent
+    # embedding-provider calls while preserving parallel answer generation.
+    for node_id, node in nodes:
         query = "；".join([
             node.get("topic", ""),
             *(node.get("sample_questions") or []),
             *(node.get("recommended_points") or []),
         ])
-        hits = await asyncio.to_thread(
-            retrieve_selected_materials,
+        node_document_ids = [
+            value for value in (node.get("document_ids") or document_ids)
+            if value in selected_documents
+        ] or document_ids
+        node_hits[node_id] = retrieve_selected_materials(
             query=query,
             user_id=user_id,
-            document_ids=document_ids,
-            top_k=6,
+            document_ids=node_document_ids,
+            top_k=max(6, len(node_document_ids)),
+            min_per_document=1 if node.get("anchor_id") else 0,
         )
+
+    async def compile_one(node_id: str, node: dict) -> tuple[str, dict | None, str | None]:
+        nonlocal completed
+        hits = node_hits[node_id]
+        roles = {
+            item.get("document_id"): item.get("role")
+            for item in (materials or []) if isinstance(item, dict)
+        }
+        hits = sorted(hits, key=lambda hit: (
+            roles.get(hit.get("document_id")) != "authoritative_script",
+            -float(hit.get("score", 0)),
+        ))
         material_context = "\n\n---\n\n".join(
             f"[document_id={hit['document_id']} source={hit['source']}]\n{hit['content']}"
             for hit in hits
@@ -149,6 +183,7 @@ async def compile_strategy_tree(
                 node_id=node_id,
                 node=node,
                 selected_documents=selected_documents,
+                evidence_hits=hits,
             )
             if not compiled["usable"]:
                 error = "编译结果缺少答案或问题变体"
@@ -172,8 +207,10 @@ async def compile_strategy_tree(
             uncompiled_nodes.append({"node_id": node_id, "error": error or "unknown"})
     variant_count = sum(len(item["question_variants"]) for item in prepared_answers.values())
     return {
-        "version": 1,
+        "version": 2,
         "document_ids": document_ids,
+        "materials": materials or [],
+        "project_anchors": candidate_context.get("project_anchors", []),
         "source_snapshot": candidate_context.get("selected_documents", []),
         "prepared_answers": prepared_answers,
         "uncompiled_nodes": uncompiled_nodes,
