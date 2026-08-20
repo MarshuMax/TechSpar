@@ -39,11 +39,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
+import { isDesktopApp } from "@/lib/desktop";
 
 // 录音参数
 const VP_SAMPLE_RATE = 16000;
 const VP_MIN_SECONDS = 6;
-const VP_MAX_SECONDS = 15;
 
 // ── WAV / PCM 工具（用于声纹录音上传）──
 
@@ -150,6 +150,12 @@ export default function Settings() {
   // 账户/系统配置（全局，仅 admin 可见）
   const [allowRegistration, setAllowRegistration] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordMessage, setPasswordMessage] = useState("");
+  const [passwordError, setPasswordError] = useState("");
 
   // 重建向量索引（手动按钮；换 embedding 后弹警告提醒）
   const [needsReindex, setNeedsReindex] = useState(false);
@@ -182,7 +188,6 @@ export default function Settings() {
   const vpChunksRef = useRef([]);
   const vpInputRateRef = useRef(VP_SAMPLE_RATE);
   const vpTimerRef = useRef(null);
-  const vpStopRef = useRef(null);
 
   // Section refs for scrollspy
   const llmRef = useRef(null);
@@ -201,7 +206,8 @@ export default function Settings() {
     account: accountRef,
     migration: migrationRef,
   };
-  const scrollSpyLock = useRef(0);
+  const scrollSpyLock = useRef(false);
+  const scrollSpyUnlockTimer = useRef(null);
 
   // 数据迁移状态
   const [exporting, setExporting] = useState(null); // null | "personal" | "system"
@@ -270,6 +276,12 @@ export default function Settings() {
 
   useEffect(() => () => cleanupRecorder(), [cleanupRecorder]);
 
+  useEffect(() => () => {
+    if (scrollSpyUnlockTimer.current != null) {
+      window.clearTimeout(scrollSpyUnlockTimer.current);
+    }
+  }, []);
+
   // ScrollSpy: highlight tab whose section is most prominent in the viewport
   useEffect(() => {
     if (loading) return;
@@ -279,7 +291,7 @@ export default function Settings() {
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (Date.now() < scrollSpyLock.current) return;
+        if (scrollSpyLock.current) return;
         const visible = entries
           .filter((e) => e.isIntersecting)
           .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
@@ -307,8 +319,40 @@ export default function Settings() {
     const el = sectionRefs[id]?.current;
     if (!el) return;
     // Suppress scrollspy briefly while the smooth scroll plays out
-    scrollSpyLock.current = Date.now() + 700;
+    scrollSpyLock.current = true;
+    if (scrollSpyUnlockTimer.current != null) {
+      window.clearTimeout(scrollSpyUnlockTimer.current);
+    }
+    scrollSpyUnlockTimer.current = window.setTimeout(() => {
+      scrollSpyLock.current = false;
+      scrollSpyUnlockTimer.current = null;
+    }, 700);
     el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const handlePasswordChange = async () => {
+    setPasswordMessage("");
+    setPasswordError("");
+    if (newPassword.length < 8) { setPasswordError("新密码至少 8 个字符"); return; }
+    if (newPassword !== confirmPassword) { setPasswordError("两次输入的新密码不一致"); return; }
+    setPasswordBusy(true);
+    try {
+      const response = await fetch("/api/auth/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("token") || ""}` },
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || "修改密码失败");
+      }
+      setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
+      setPasswordMessage("密码已更新");
+    } catch (err) {
+      setPasswordError(err.message || "修改密码失败");
+    } finally {
+      setPasswordBusy(false);
+    }
   };
 
   const handleSaveVpCredentials = async () => {
@@ -364,13 +408,7 @@ export default function Settings() {
       setVpRecordingSec(0);
       const t0 = Date.now();
       vpTimerRef.current = setInterval(() => {
-        const elapsed = (Date.now() - t0) / 1000;
-        setVpRecordingSec(Math.min(elapsed, VP_MAX_SECONDS));
-        if (elapsed >= VP_MAX_SECONDS) {
-          clearInterval(vpTimerRef.current);
-          vpTimerRef.current = null;
-          void vpStopRef.current?.(VP_MAX_SECONDS);
-        }
+        setVpRecordingSec((Date.now() - t0) / 1000);
       }, 200);
     } catch (err) {
       cleanupRecorder();
@@ -378,10 +416,10 @@ export default function Settings() {
     }
   };
 
-  const stopVpRecording = async (secondsOverride) => {
+  const stopVpRecording = async () => {
     const chunks = vpChunksRef.current;
     const inputRate = vpInputRateRef.current;
-    const seconds = typeof secondsOverride === "number" ? secondsOverride : vpRecordingSec;
+    const seconds = vpRecordingSec;
     cleanupRecorder();
 
     if (seconds < VP_MIN_SECONDS) {
@@ -404,7 +442,6 @@ export default function Settings() {
       setVpBusy(false);
     }
   };
-  vpStopRef.current = stopVpRecording;
 
   const handleDeleteEnrollment = async () => {
     setVpBusy(true);
@@ -462,7 +499,7 @@ export default function Settings() {
         overwriteFiles: importOverwriteFiles,
       });
       setMigrationMessage(
-        `已导入：数据写入/更新 ${r.db_inserted} 条，跳过 ${r.db_skipped} 条；文件复制 ${r.files_copied} 个，跳过 ${r.files_skipped} 个。向量索引未随备份迁移，请到 Embedding 设置中重建索引。`
+        `已导入：数据写入/更新 ${r.db_inserted} 条，跳过 ${r.db_skipped} 条；文件复制或合并 ${r.files_copied} 个，跳过 ${r.files_skipped} 个。个人画像已与本地画像合并，练习统计已按去重后的记录重新计算。向量索引未随备份迁移，请到 Embedding 设置中重建索引。`
       );
       setImportFile(null);
       setImportConfirming(false);
@@ -617,7 +654,7 @@ export default function Settings() {
     { id: "services", label: "可选服务", icon: KeyRound },
     { id: "voiceprint", label: "声纹识别", icon: Mic },
     { id: "training", label: "训练参数", icon: Sliders },
-    ...(isAdmin ? [{ id: "account", label: "账户", icon: UserCog }] : []),
+    { id: "account", label: "账户", icon: UserCog },
     { id: "migration", label: "数据迁移", icon: Database },
   ];
 
@@ -739,7 +776,7 @@ export default function Settings() {
               <span className="text-base font-semibold">Embedding 模型</span>
             </div>
             <div className="text-[13px] text-dim mb-6">
-              你自己的 Embedding，仅对你生效；用于题库 / 简历 / 知识库的向量化，必须配置。
+              你自己的 Embedding，仅对你生效；用于题库、知识库、个人资料库和记忆的向量化，必须配置。简历会直接读取全文，不使用 Embedding。
               <span className="text-amber-500/90">更换模型后请点下方「更新向量索引」重建（会清空并重算向量，历史会话记忆向量无法恢复）。</span>
             </div>
 
@@ -770,7 +807,7 @@ export default function Settings() {
                 {[
                   { value: "", hint: "填了 API 字段走 API，否则走本地（兼容老配置）" },
                   { value: "api", hint: "通过 OpenAI 兼容接口请求 embedding" },
-                  { value: "local", hint: "用 HuggingFace 加载本地模型，需 `pip install -r requirements.local-embedding.txt`" },
+                  { value: "local", hint: "用 Transformers.js 在本机运行 ONNX 模型，首次使用会自动下载并缓存" },
                 ].find((o) => o.value === embBackend)?.hint}
               </div>
             </div>
@@ -845,7 +882,7 @@ export default function Settings() {
                     <Label className={labelClass}>Model Name</Label>
                     <Input
                       className={inputClass}
-                      placeholder="例：BAAI/bge-m3"
+                      placeholder="例：Xenova/bge-m3"
                       value={embLocalModel}
                       onChange={(e) => setEmbLocalModel(e.target.value)}
                     />
@@ -869,7 +906,7 @@ export default function Settings() {
               <div className="mt-6 flex items-start gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/5 p-4 text-[13px] text-amber-500/90">
                 <AlertTriangle size={16} className="mt-0.5 shrink-0" />
                 <span>
-                  你更换了 Embedding 模型，旧向量已失效。点击下方按钮重建简历 / 知识库 / 记忆向量；
+                  你更换了 Embedding 模型，旧向量已失效。点击下方按钮重建知识库 / 个人资料库 / 记忆向量；
                   在重建前，相关检索结果会暂时为空。
                 </span>
               </div>
@@ -906,7 +943,7 @@ export default function Settings() {
                     </span>
                   ) : (
                     <span className="text-[12px] text-dim">
-                      更换 Embedding 模型并保存后，点此用新模型重建简历 / 知识库 / 记忆向量
+                      更换 Embedding 模型并保存后，点此用新模型重建知识库 / 个人资料库 / 记忆向量
                     </span>
                   ))}
               </div>
@@ -1113,8 +1150,8 @@ export default function Settings() {
                 <Label className={labelClass}>候选人声纹</Label>
                 <div className="text-[12px] text-dim/70 mt-1 mb-3">
                   {vpRecording
-                    ? `录音中：${vpRecordingSec.toFixed(1)} / ${VP_MAX_SECONDS} 秒，到时自动上传`
-                    : `请连续说话 ${VP_MIN_SECONDS}–${VP_MAX_SECONDS} 秒，单人、安静环境`}
+                    ? `录音中：${vpRecordingSec.toFixed(1)} 秒`
+                    : `建议连续说话 ≥ ${VP_MIN_SECONDS} 秒，单人、安静环境`}
                 </div>
                 <div className="flex flex-wrap gap-3">
                   {vpRecording ? (
@@ -1212,17 +1249,43 @@ export default function Settings() {
           </CardContent>
         </Card>
 
-        {/* Account / System (admin only) */}
-        {isAdmin && (
+        {/* Account / System */}
         <Card ref={accountRef} data-tab-id="account" className="overflow-hidden border-border/40 bg-card/40 scroll-mt-4">
           <CardContent className="p-5 md:p-7">
             <div className="flex items-center gap-2 mb-1">
               <UserCog size={16} className="text-primary" />
               <span className="text-base font-semibold">账户</span>
             </div>
-            <div className="text-[13px] text-dim mb-5">控制谁能进入系统。保存后立即生效。仅管理员可见。</div>
+            <div className="text-[13px] text-dim mb-5">管理当前账户凭证{isAdmin ? "和注册策略" : ""}。</div>
 
-            <label className="flex items-start justify-between gap-4 rounded-xl border border-border/60 bg-background/40 px-4 py-4 cursor-pointer select-none">
+            {isDesktopApp() ? (
+              <div className="rounded-xl border border-border/60 bg-background/40 px-4 py-4 text-[13px] text-dim leading-6">
+                桌面版使用仅保存在本机的随机凭证并自动进入，不暴露固定默认密码。
+              </div>
+            ) : (
+              <div className="rounded-xl border border-border/60 bg-background/40 px-4 py-4 space-y-4">
+                <div>
+                  <div className="text-sm font-medium">修改密码</div>
+                  <div className="text-[12px] text-dim/70 mt-1">首次使用默认账户后请立即修改，至少 8 个字符。</div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <Input type="password" autoComplete="current-password" placeholder="当前密码" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
+                  <Input type="password" autoComplete="new-password" placeholder="新密码" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+                  <Input type="password" autoComplete="new-password" placeholder="再次输入新密码" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+                </div>
+                <div className="flex items-center gap-3">
+                  <Button variant="outline" disabled={passwordBusy || !currentPassword || !newPassword || !confirmPassword} onClick={handlePasswordChange}>
+                    {passwordBusy && <Loader2 size={14} className="mr-1.5 animate-spin" />}
+                    {passwordBusy ? "更新中…" : "更新密码"}
+                  </Button>
+                  {passwordMessage && <span className="text-[12px] text-emerald-500">{passwordMessage}</span>}
+                  {passwordError && <span className="text-[12px] text-red-500">{passwordError}</span>}
+                </div>
+              </div>
+            )}
+
+            {isAdmin && (
+            <label className="mt-4 flex items-start justify-between gap-4 rounded-xl border border-border/60 bg-background/40 px-4 py-4 cursor-pointer select-none">
               <div className="min-w-0">
                 <div className="text-sm font-medium">允许新用户注册</div>
                 <div className="text-[12px] text-dim/70 mt-1 leading-5">
@@ -1247,9 +1310,9 @@ export default function Settings() {
                 />
               </button>
             </label>
+            )}
           </CardContent>
         </Card>
-        )}
 
         {/* Data Migration */}
         <Card ref={migrationRef} data-tab-id="migration" className="overflow-hidden border-border/40 bg-card/40 scroll-mt-4">
@@ -1353,7 +1416,7 @@ export default function Settings() {
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <Label className={labelClass}>数据冲突策略</Label>
+                    <Label className={labelClass}>练习与对话记录冲突策略</Label>
                     <div className="flex gap-2">
                       {[
                         { value: "skip", label: "保留本地" },
@@ -1384,7 +1447,7 @@ export default function Settings() {
                         onChange={(e) => setImportOverwriteFiles(e.target.checked)}
                         className="accent-primary"
                       />
-                      <span className="text-[13px] text-dim">用归档文件覆盖本地</span>
+                      <span className="text-[13px] text-dim">用归档文件覆盖本地（个人画像始终安全合并）</span>
                     </label>
                   </div>
                 </div>
@@ -1396,7 +1459,7 @@ export default function Settings() {
                       <div className="text-[13px]">
                         将把 <span className="font-medium">{importFile?.name}</span> 合并到当前账户。
                         {importDbStrategy === "overwrite" && "当前账户内同 ID 的数据会被覆盖。"}
-                        {importOverwriteFiles && "用户文件也会被覆盖。"}
+                        {importOverwriteFiles && "除个人画像外，其他同名用户文件会被覆盖。"}
                       </div>
                     </div>
                     <div className="flex gap-2">

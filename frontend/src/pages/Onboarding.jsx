@@ -206,7 +206,7 @@ export default function Onboarding() {
             ) : (
               <div className="space-y-4">
                 <div className="text-[13px] text-dim">
-                  Embedding 用于简历 / 知识库 / 记忆向量化。免费示例:SiliconFlow 的 <span className="text-text">BAAI/bge-large-zh-v1.5</span>。可与 LLM 用不同服务商。
+                  Embedding 用于知识库 / 个人资料库 / 记忆向量化；简历会直接读取全文。免费示例:SiliconFlow 的 <span className="text-text">BAAI/bge-large-zh-v1.5</span>。可与 LLM 用不同服务商。
                 </div>
                 <div className="space-y-2">
                   <Label className={labelClass}>API Base URL</Label>
@@ -214,7 +214,7 @@ export default function Onboarding() {
                 </div>
                 <div className="space-y-2">
                   <Label className={labelClass}>Embedding Model</Label>
-                  <Input className={inputClass} autoComplete="off" placeholder="例：BAAI/bge-m3" value={embApiModel} onChange={(e) => setEmbApiModel(e.target.value)} />
+                  <Input className={inputClass} autoComplete="off" placeholder="例：BAAI/bge-large-zh-v1.5" value={embApiModel} onChange={(e) => setEmbApiModel(e.target.value)} />
                 </div>
                 <div className="space-y-2">
                   <Label className={labelClass}>API Key</Label>
