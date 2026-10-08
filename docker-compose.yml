@@ -1,10 +1,11 @@
+name: techspar-user-trial
 services:
   backend:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
     ports:
-      - "127.0.0.1:8001:8000"
+      - "127.0.0.1:8006:8000"
     volumes:
       - ./data:/app/data
     env_file:
@@ -16,7 +17,7 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
     ports:
-      - "127.0.0.1:8081:80"
+      - "127.0.0.1:8086:80"
     depends_on:
       - backend
     restart: unless-stopped
