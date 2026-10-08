@@ -2,7 +2,6 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { encodeCopilotAudio } from '@techspar/contracts';
 import { decodeCopilotEvent, type CopilotServerEvent } from '../api/events';
 import { CopilotAudioCapture, emptyAudioLevel } from '../lib/copilot-audio';
-import { isDesktopApp } from '../lib/desktop';
 
 export type CopilotMessage = CopilotServerEvent;
 interface CopilotStreamOptions { prepId?: string; onUpdate?: (msg: CopilotMessage) => void }
@@ -35,7 +34,7 @@ export default function useCopilotStream({ prepId, onUpdate }: CopilotStreamOpti
   }, []);
 
   const connect = useCallback((sessionId: string) => {
-    if (!isDesktopApp() || (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN)) return;
+    if (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN)) return;
     sessionIdRef.current = sessionId;
     manualClose.current = false;
     readyRef.current = false;
@@ -88,7 +87,7 @@ export default function useCopilotStream({ prepId, onUpdate }: CopilotStreamOpti
   useEffect(() => { connectRef.current = connect; }, [connect]);
 
   const startListening = useCallback(async (microphoneId?: string) => {
-    if (!isDesktopApp() || captureRef.current || !readyRef.current || wsRef.current?.readyState !== WebSocket.OPEN) return;
+    if (captureRef.current || !readyRef.current || wsRef.current?.readyState !== WebSocket.OPEN) return;
     setAudioError('');
     setStarting(true);
     const capture = new CopilotAudioCapture({

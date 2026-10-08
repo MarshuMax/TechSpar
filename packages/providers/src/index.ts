@@ -131,12 +131,14 @@ export type EmbeddingClientConfig = {
   apiKey: string
   model: string
   batchSize?: number
+  /** OpenAI SDK 默认 base64；Cloudflare 等网关只接受 float（langchain 也是显式传 float）。 */
+  encodingFormat?: 'float' | 'base64'
 }
 
 type EmbeddingApi = {
   embeddings: {
     create(
-      input: { model: string; input: string | string[] },
+      input: { model: string; input: string | string[]; encoding_format?: 'float' | 'base64' },
       options?: { signal?: AbortSignal },
     ): Promise<{ data: Array<{ index: number; embedding: number[] }> }>
   }
@@ -161,7 +163,7 @@ export class ApiEmbeddingClient {
         continue
       }
       try {
-        const response = await this.client.embeddings.create({ model: this.config.model, input: [...batch] }, { signal })
+        const response = await this.client.embeddings.create({ model: this.config.model, input: [...batch], encoding_format: this.config.encodingFormat ?? 'float' }, { signal })
         const ordered = [...response.data].sort((a, b) => a.index - b.index).map((item) => item.embedding)
         if (ordered.length !== batch.length) throw new Error(`Embedding vector count mismatch: expected ${batch.length}, got ${ordered.length}`)
         output.push(...ordered)
@@ -176,7 +178,7 @@ export class ApiEmbeddingClient {
   }
 
   private async embedOne(text: string, signal?: AbortSignal): Promise<number[]> {
-    const response = await this.client.embeddings.create({ model: this.config.model, input: text }, { signal })
+    const response = await this.client.embeddings.create({ model: this.config.model, input: text, encoding_format: this.config.encodingFormat ?? 'float' }, { signal })
     if (response.data.length !== 1) throw new Error(`Embedding vector count mismatch: expected 1, got ${response.data.length}`)
     return response.data[0]!.embedding
   }
