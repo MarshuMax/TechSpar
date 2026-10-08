@@ -34,7 +34,7 @@ export default function useCopilotStream({ prepId, onUpdate }: CopilotStreamOpti
   }, []);
 
   const connect = useCallback((sessionId: string) => {
-    if (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN)) return;
+    if (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN) return;
     sessionIdRef.current = sessionId;
     manualClose.current = false;
     readyRef.current = false;
