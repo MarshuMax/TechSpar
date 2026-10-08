@@ -1,4 +1,5 @@
-import { expect, test } from 'bun:test'
+import { describe, expect, test } from 'bun:test'
+import { normalizeStoredProfile } from './profile-repository.ts'
 import { loadConfig } from './index.ts'
 
 const baseEnv = { TECHSPAR_BASE_DIR: '/tmp/techspar-test', JWT_SECRET: 'test-secret' }
@@ -46,4 +47,31 @@ test('负数配额同样拒绝', () => {
 test('PORT 为非法值时抛错', () => {
   expect(() => loadConfig({ ...baseEnv, PORT: 'abc' })).toThrow('PORT')
   expect(() => loadConfig({ ...baseEnv, PORT: '-1' })).toThrow('PORT')
+})
+
+describe('legacy profile normalization', () => {
+  test('drops explicit nulls in known collections and backfills due_reviews', () => {
+    const legacy = {
+      name: '', target_role: 'DevOps工程师', updated_at: 't', last_consolidation_at: 't',
+      topic_mastery: { java: { score: 0.5, notes: null } },
+      weak_points: [{ point: 'p', topic: null, sr: { interval_days: 1, last_score: null } }],
+      strong_points: [{ point: 's', source: null }],
+      behavior_signals: { 'reasoning.x': { description: null, times_seen: 2 } },
+      communication: { style: 's', habits: [], suggestions: [] },
+      thinking_patterns: { strengths: [], gaps: [] },
+      stats: { total_sessions: 14, resume_sessions: 1, drill_sessions: 10, job_prep_sessions: 3, avg_score: 6, score_history: [] },
+    }
+    const normalized = normalizeStoredProfile(legacy)
+    expect(normalized.due_reviews).toEqual([])
+    expect('last_score' in normalized.weak_points[0]!.sr!).toBe(false)
+    expect('topic' in normalized.weak_points[0]!).toBe(false)
+    expect('notes' in normalized.topic_mastery.java!).toBe(false)
+    expect(normalized.weak_points[0]!.point).toBe('p')
+    expect(normalized.behavior_signals['reasoning.x']).toMatchObject({ times_seen: 2 })
+  })
+
+  test('is a no-op for already-valid profiles', () => {
+    const valid = { due_reviews: [{ point: 'x' }], weak_points: [], strong_points: [], topic_mastery: {}, behavior_signals: {} }
+    expect(normalizeStoredProfile(valid).due_reviews).toEqual([{ point: 'x' }])
+  })
 })
