@@ -8,7 +8,10 @@ export default defineConfig(() => {
   const apiTarget = process.env.TECHSPAR_API_TARGET || 'http://localhost:8000'
 
   return {
+    // 仓库根目录的 .env 同时驱动后端与前端构建，省掉再维护一份 frontend/.env
+    envDir: fileURLToPath(new URL('..', import.meta.url)),
     plugins: [react(), tailwindcss()],
+    esbuild: { jsx: 'automatic' },
     resolve: {
       alias: {
         "@": fileURLToPath(new URL("./src", import.meta.url)),

@@ -1,3 +1,4 @@
+import type { ApiResponse } from "../api/client";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -17,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { sanitizeJobPrepDraft } from "@/lib/jobPrepDraft";
 
 interface JobPrepProps {
   embedded?: boolean;
@@ -27,40 +29,7 @@ interface ResumeFile {
   size?: number;
 }
 
-interface FocusArea {
-  area: string;
-  priority?: string;
-  reason: string;
-}
-
-interface RecommendedStory {
-  project: string;
-  reason: string;
-}
-
-interface QuestionGroup {
-  title: string;
-  reason: string;
-  sample_questions?: string[];
-}
-
-interface ResumeAlignment {
-  resume_used?: boolean;
-  fit_assessment?: string;
-  risk_gaps?: string[];
-  matching_evidence?: string[];
-  recommended_stories?: RecommendedStory[];
-}
-
-interface JobPrepPreview {
-  company?: string;
-  position?: string;
-  role_summary?: string;
-  focus_areas?: FocusArea[];
-  prep_priorities?: string[];
-  likely_question_groups?: QuestionGroup[];
-  resume_alignment?: ResumeAlignment;
-}
+type JobPrepPreview = ApiResponse<"/api/job-prep/preview", "post">["preview"];
 
 interface JobPrepDraft {
   company: string;
@@ -86,7 +55,7 @@ const DRAFT_KEY = "jobprep-draft";
 function loadDraft(): Partial<JobPrepDraft> {
   try {
     const raw = localStorage.getItem(DRAFT_KEY);
-    return raw ? JSON.parse(raw) as Partial<JobPrepDraft> : {};
+    return raw ? sanitizeJobPrepDraft(JSON.parse(raw)) as Partial<JobPrepDraft> : {};
   } catch {
     return {};
   }
@@ -136,7 +105,7 @@ function errorMessage(error: unknown) {
 
 export default function JobPrep({ embedded = false }: JobPrepProps) {
   const navigate = useNavigate();
-  const initialDraft = useMemo(loadDraft, []);
+  const initialDraft = useMemo(() => loadDraft(), []);
   const [company, setCompany] = useState(initialDraft.company || "");
   const [position, setPosition] = useState(initialDraft.position || "");
   const [jdText, setJdText] = useState(initialDraft.jdText || "");
@@ -197,7 +166,7 @@ export default function JobPrep({ embedded = false }: JobPrepProps) {
     setPreviewing(true);
     setError("");
     try {
-      const data = await previewJobPrep({ ...payload }) as unknown as { preview: JobPrepPreview };
+      const data = await previewJobPrep({ ...payload });
       setPreview(data.preview);
       setPreviewSignature(signature);
     } catch (err) {
@@ -208,10 +177,14 @@ export default function JobPrep({ embedded = false }: JobPrepProps) {
   };
 
   const handleStart = async () => {
+    if (!preview) return;
     setStarting(true);
     setError("");
     try {
-      const data = await startJobPrep({ ...payload, preview_data: preview }) as unknown as { session_id: string; [key: string]: unknown };
+      const data = await startJobPrep({
+        ...payload,
+        preview_data: { ...preview },
+      });
       try { localStorage.removeItem(DRAFT_KEY); } catch { /* ignore */ }
       navigate(`/interview/${data.session_id}`, { state: data });
     } catch (err) {

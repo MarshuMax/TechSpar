@@ -1,3 +1,4 @@
+import React from "react";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
@@ -10,7 +11,7 @@ describe("CopilotPanel", () => {
       streamingAnswer="Prepared response"
       answerLoading={false}
       answerStreaming={false}
-      answerMeta={{ source: "compiled", confidence: 0.92, latencyMs: 73, shortAnswer: "Short", utteranceId: "u1" }}
+      answerMeta={{ source: "prepared", confidence: 0.92, latencyMs: 73, shortAnswer: "Short", utteranceId: "u1" }}
     />);
     expect(screen.getByText("预编译参考答案")).toBeInTheDocument();
     expect(screen.getByText(/Prepared · 92% · 73ms/)).toBeInTheDocument();

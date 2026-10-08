@@ -11,12 +11,14 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import Logo from "./Logo";
+import AfdianIcon from "./AfdianIcon";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+
 
 interface NavItem {
   path: string;
@@ -32,7 +34,7 @@ const NAV_ITEMS: NavItem[] = [
   { path: "/resume-manager", label: "简历管理", icon: FileUser },
   { path: "/recording", label: "录音复盘", icon: Mic },
   { path: "/copilot", label: "面试 Copilot", icon: Brain },
-  { path: "/knowledge", label: "训练领域", icon: BookOpen },
+  { path: "/knowledge", label: "领域管理", icon: BookOpen },
   { path: "/graph", label: "图谱", icon: GitFork },
   { path: "/history", label: "历史记录", icon: Clock },
   { path: "/settings", label: "设置", icon: SettingsIcon },
@@ -118,6 +120,19 @@ export default function Sidebar() {
         <Separator />
 
         <div className={cn("py-2 space-y-0.5", collapsed ? "px-2" : "px-3")}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <a href="https://ifdian.net/a/techspar" target="_blank" rel="noopener noreferrer"
+                aria-label="赞助 TechSpar"
+                className={cn("flex items-center gap-2.5 w-full py-2 rounded-lg text-[13px] text-dim hover:text-primary hover:bg-hover transition-all", collapsed && "justify-center")}>
+                <AfdianIcon size={18} />
+                {!collapsed && <span>赞助 TechSpar</span>}
+              </a>
+            </TooltipTrigger>
+            {collapsed && <TooltipContent side="right" sideOffset={8}>赞助 TechSpar</TooltipContent>}
+          </Tooltip>
+
+
           <Tooltip>
             <TooltipTrigger asChild>
               <button

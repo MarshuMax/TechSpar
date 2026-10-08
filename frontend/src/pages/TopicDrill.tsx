@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowUpRight, BookOpen, Layers, Loader2, Play, Target } from "lucide-react";
+import { ArrowUpRight, BookOpen, Layers, Loader2, Play, Plus, Target } from "lucide-react";
 import TopicCard from "../components/TopicCard";
+import AddTopicDialog from "../components/AddTopicDialog";
 import { getTopics, startInterview } from "../api/interview";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,7 @@ export default function TopicDrill() {
   const [topics, setTopics] = useState<Topics>({});
   const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
   const [pageLoading, setPageLoading] = useState(true);
+  const [showAddTopic, setShowAddTopic] = useState(false);
   const { creatingSessionMode, setCreatingSessionMode } = useTaskStatus();
   const loading = creatingSessionMode === "topic_drill";
   const topicEntries = Object.entries(topics);
@@ -49,6 +51,14 @@ export default function TopicDrill() {
       });
     return () => { active = false; };
   }, []);
+
+  const handleTopicCreated = async (key: string) => {
+    try {
+      const data = await getTopics();
+      setTopics(data as unknown as Topics);
+    } catch { /* 列表刷新失败时保持现状 */ }
+    setSelectedTopic(key);
+  };
 
   const handleStart = async () => {
     if (!selectedTopic) return;
@@ -71,8 +81,7 @@ export default function TopicDrill() {
             <Target size={21} />
           </div>
           <div>
-            <div className="text-[11px] font-semibold tracking-[0.18em] text-dim/70">专项练习</div>
-            <h1 className="mt-0.5 text-2xl font-display font-bold tracking-tight text-text md:text-[30px]">专项训练</h1>
+            <h1 className="text-2xl font-display font-bold tracking-tight text-text md:text-[30px]">专项训练</h1>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-dim">
               选择一个训练领域，AI 会参考该领域的核心知识和高频题目动态追问。
             </p>
@@ -90,34 +99,13 @@ export default function TopicDrill() {
         </Button>
       </header>
 
-      <div className="mt-5 flex flex-col gap-3 rounded-2xl border border-border/75 bg-card/55 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-3">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-            <BookOpen size={16} />
-          </div>
-          <div>
-            <div className="text-sm font-semibold text-text">训练内容从哪里来？</div>
-            <div className="mt-0.5 text-[12px] leading-5 text-dim">
-              训练领域中维护的知识与高频题目，会直接影响 AI 的出题方向和评分依据。
-            </div>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={() => navigate("/knowledge")}
-          className="shrink-0 pl-11 text-left text-[12px] font-medium text-primary transition-opacity hover:opacity-80 sm:pl-0"
-        >
-          查看和编辑领域
-        </button>
-      </div>
-
-      <section className="mt-7">
+      <section className="mt-6">
         <div className="mb-4 flex items-end justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <Layers size={18} className="text-primary" />
             <div>
               <h2 className="text-base font-semibold text-text">选择训练领域</h2>
-              <p className="mt-0.5 text-[12px] text-dim">每次训练聚焦一个领域，便于持续积累掌握度。</p>
+              <p className="mt-0.5 text-[12px] text-dim">选择一个领域开始训练，没有合适的可以新建。</p>
             </div>
           </div>
           {!pageLoading && topicEntries.length > 0 && (
@@ -139,9 +127,9 @@ export default function TopicDrill() {
               </div>
               <h3 className="mt-4 text-base font-semibold text-text">还没有训练领域</h3>
               <p className="mt-2 max-w-md text-[13px] leading-6 text-dim">
-                先创建一个领域并准备核心知识，回来后就能选择它开始专项训练。
+                先创建一个领域并准备核心知识，就能选择它开始专项训练。
               </p>
-              <Button variant="gradient" className="mt-5" onClick={() => navigate("/knowledge")}>
+              <Button variant="gradient" className="mt-5" onClick={() => setShowAddTopic(true)}>
                 创建训练领域
               </Button>
             </CardContent>
@@ -157,9 +145,30 @@ export default function TopicDrill() {
                 onClick={() => setSelectedTopic(key)}
               />
             ))}
+            <button
+              type="button"
+              onClick={() => setShowAddTopic(true)}
+              className="group flex cursor-pointer items-center gap-4 rounded-2xl border border-dashed border-border/80 bg-card/30 p-4 text-left transition-all duration-300 hover:-translate-y-1 hover:border-primary/50 hover:bg-card hover:shadow-lg hover:shadow-primary/5 md:gap-5 md:px-6 md:py-5"
+            >
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-dashed border-border/80 text-dim transition-colors duration-300 group-hover:border-primary/30 group-hover:bg-primary/10 group-hover:text-primary md:h-14 md:w-14">
+                <Plus size={24} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-[14px] font-extrabold leading-snug tracking-tight text-text transition-colors duration-300 group-hover:text-primary/95 md:text-[15px]">
+                  新建领域
+                </div>
+                <div className="mt-0.5 text-[12px] text-dim">没找到你的方向？新建一个</div>
+              </div>
+            </button>
           </div>
         )}
       </section>
+
+      <AddTopicDialog
+        open={showAddTopic}
+        onClose={() => setShowAddTopic(false)}
+        onCreated={handleTopicCreated}
+      />
 
       <div className={cn(
         "fixed bottom-6 left-[max(1rem,calc(50%-450px))] right-[max(1rem,calc(50%-450px))] z-40 transition-all duration-300 md:left-1/2 md:right-auto md:w-[560px] md:-translate-x-1/2",

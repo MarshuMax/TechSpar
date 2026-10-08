@@ -25,7 +25,7 @@ export default function PreparedAnswersView({ knowledge, loading = false, error 
             </div>
           </div>
           <Badge variant={knowledge.index_status === "ready" ? "green" : "secondary"}>
-            {knowledge.index_status === "ready" ? "Ready" : knowledge.index_status || "Missing"}
+            {knowledge.source_state === "stale" ? "Stale" : knowledge.index_status === "ready" ? "Ready" : knowledge.index_status || "Missing"}
           </Badge>
         </div>
 
@@ -91,6 +91,17 @@ export default function PreparedAnswersView({ knowledge, loading = false, error 
           })}
           {answers.length === 0 && <div className="py-4 text-center text-sm text-dim">此 Prep 没有可用的预编译答案，实时阶段将使用 AI fallback。</div>}
         </div>
+        {(knowledge.uncompiled_nodes || []).length > 0 && (
+          <div className="mt-4 rounded-2xl border border-amber-500/20 bg-amber-500/8 p-4">
+            <div className="flex items-center gap-2 text-sm font-semibold text-amber-500"><ShieldAlert size={15} /> 未成功预编译的节点</div>
+            <div className="mt-2 space-y-1.5">
+              {knowledge.uncompiled_nodes.map((item) => (
+                <div key={item.node_id} className="text-xs text-dim"><span className="font-medium text-text">{item.node_id}</span>：{item.error || "unknown"}</div>
+              ))}
+            </div>
+          </div>
+        )}
+        {knowledge.index_error && <div className="mt-3 text-xs text-red">索引错误：{knowledge.index_error}</div>}
       </CardContent>
     </Card>
   );

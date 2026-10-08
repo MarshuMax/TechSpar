@@ -17,7 +17,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import Logo from "../components/Logo";
 import GitHubStar from "../components/GitHubStar";
+import AfdianIcon from "../components/AfdianIcon";
 import heroArt from "../assets/hero-art.jpg";
+
+/** 赞助页。托管版的服务器与模型推理费用由此支撑。 */
+const SPONSOR_URL = "https://ifdian.net/a/techspar";
 import heroIntro from "../assets/hero-intro.mp4";
 import storyRemember from "../assets/story-remember.jpg";
 import storyAdapt from "../assets/story-adapt.jpg";
@@ -252,23 +256,23 @@ const revealStyle = (delay) => ({ "--reveal-delay": `${delay}s` });
 /* ── Typing effect for detail panel preview lines ── */
 function TypedLine({ text, delay = 0 }) {
   const [displayed, setDisplayed] = useState("");
-  const [started, setStarted] = useState(false);
 
   useEffect(() => {
-    const t = setTimeout(() => setStarted(true), delay);
-    return () => clearTimeout(t);
-  }, [delay]);
-
-  useEffect(() => {
-    if (!started) { setDisplayed(""); return; }
     let i = 0;
-    const interval = setInterval(() => {
-      i++;
-      setDisplayed(text.slice(0, i));
-      if (i >= text.length) clearInterval(interval);
-    }, 22);
-    return () => clearInterval(interval);
-  }, [text, started]);
+    let interval = null;
+    const timer = window.setTimeout(() => {
+      setDisplayed("");
+      interval = window.setInterval(() => {
+        i++;
+        setDisplayed(text.slice(0, i));
+        if (i >= text.length) window.clearInterval(interval);
+      }, 22);
+    }, delay);
+    return () => {
+      window.clearTimeout(timer);
+      if (interval != null) window.clearInterval(interval);
+    };
+  }, [delay, text]);
 
   return (
     <span className="text-dim">
@@ -326,6 +330,16 @@ export default function Landing() {
 
           <div className="flex items-center gap-3">
             <GitHubStar />
+            <a
+              href={SPONSOR_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="在爱发电赞助 TechSpar"
+              className="group inline-flex items-center gap-2 rounded-full border border-border bg-card/80 px-3 py-1.5 text-sm font-medium text-text backdrop-blur-sm transition-colors hover:border-primary/40 hover:bg-card"
+            >
+              <AfdianIcon size={15} className="text-primary transition-transform duration-300 group-hover:scale-110" />
+              <span className="hidden sm:inline">赞助</span>
+            </a>
             <Button variant="outline" onClick={() => navigate("/login")}>
               登录
             </Button>
@@ -536,6 +550,18 @@ export default function Landing() {
             <span className="font-display font-bold">TechSpar</span>
           </div>
           <p className="text-xs text-dim">从刷题到实战的 AI 技术面试陪练系统</p>
+          <p className="max-w-md text-xs leading-relaxed text-dim">
+            社区版支持自行部署，官方云服务提供平台模型与套餐。你的支持会用于服务器、模型推理和持续开发。
+            <a
+              href={SPONSOR_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-text underline underline-offset-2 transition-colors hover:text-primary"
+            >
+              赞助
+            </a>
+            一点能让它继续做下去。
+          </p>
           <div className="flex gap-6 text-xs">
             <a
               href="https://github.com/AnnaSuSu/TechSpar"
@@ -546,12 +572,20 @@ export default function Landing() {
               GitHub
             </a>
             <a
-              href="https://techspar.top/"
+              href="https://techspar.cn/"
               target="_blank"
               rel="noreferrer"
               className="text-dim transition-colors hover:text-text"
             >
               在线 Demo
+            </a>
+            <a
+              href={SPONSOR_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-dim transition-colors hover:text-text"
+            >
+              爱发电
             </a>
           </div>
         </div>

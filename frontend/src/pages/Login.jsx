@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import useAuth from "../hooks/useAuth";
 import { ArrowLeft } from "lucide-react";
@@ -7,24 +7,53 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import Logo from "../components/Logo";
+import { loadRegistrationConfig } from "../lib/registrationConfig";
+import { bootstrapDesktopSession, isDesktopApp } from "../lib/desktop";
 
 export default function Login() {
   const [isRegister, setIsRegister] = useState(false);
-  const [allowReg, setAllowReg] = useState(null);
+  const [registrationStatus, setRegistrationStatus] = useState("loading");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [desktopBootstrapping, setDesktopBootstrapping] = useState(isDesktopApp);
+  const desktopBootstrapAttempted = useRef(false);
   const { login } = useAuth();
   const navigate = useNavigate();
 
-  useEffect(() => {
-    fetch("/api/auth/config")
-      .then((r) => r.json())
-      .then((d) => setAllowReg(d.allow_registration))
-      .catch(() => setAllowReg(false));
+  const refreshRegistrationStatus = useCallback(async () => {
+    setRegistrationStatus("loading");
+    try {
+      const allowed = await loadRegistrationConfig();
+      setRegistrationStatus(allowed ? "allowed" : "disabled");
+    } catch {
+      setRegistrationStatus("error");
+    }
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refreshRegistrationStatus();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [refreshRegistrationStatus]);
+
+  useEffect(() => {
+    if (!isDesktopApp() || desktopBootstrapAttempted.current) return;
+    desktopBootstrapAttempted.current = true;
+    let cancelled = false;
+    void bootstrapDesktopSession()
+      .then((data) => {
+        if (cancelled || !data) return;
+        login(data.token, data.user);
+        navigate("/", { replace: true });
+      })
+      .catch(() => undefined)
+      .finally(() => { if (!cancelled) setDesktopBootstrapping(false); });
+    return () => { cancelled = true; };
+  }, [login, navigate]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -82,7 +111,7 @@ export default function Login() {
               <div>
                 <CardTitle>{isRegister ? "创建账号" : "欢迎回来"}</CardTitle>
                 <CardDescription className="mt-1">
-                  {isRegister ? "注册后开始你的面试训练" : "登录继续你的面试训练"}
+                  {desktopBootstrapping ? "正在打开本地工作区…" : isRegister ? "注册后开始你的面试训练" : "登录继续你的面试训练"}
                 </CardDescription>
               </div>
             </div>
@@ -112,12 +141,12 @@ export default function Login() {
                 </div>
               )}
 
-              <Button type="submit" variant="gradient" className="w-full mt-2" disabled={loading}>
-                {loading ? "处理中..." : isRegister ? "注册" : "登录"}
+              <Button type="submit" variant="gradient" className="w-full mt-2" disabled={loading || desktopBootstrapping}>
+                {desktopBootstrapping ? "正在进入…" : loading ? "处理中..." : isRegister ? "注册" : "登录"}
               </Button>
             </form>
 
-            {allowReg && (
+            {registrationStatus === "allowed" && (
               <div className="mt-6 pt-5 border-t border-border text-center">
                 <span className="text-sm text-dim">
                   {isRegister ? "已有账号？" : "还没有账号？"}
@@ -127,6 +156,25 @@ export default function Login() {
                   className="text-sm text-primary font-medium ml-1.5 hover:underline cursor-pointer"
                 >
                   {isRegister ? "去登录" : "注册"}
+                </button>
+              </div>
+            )}
+
+            {registrationStatus === "loading" && (
+              <div className="mt-6 pt-5 border-t border-border text-center text-sm text-dim">
+                正在检查是否开放注册…
+              </div>
+            )}
+
+            {registrationStatus === "error" && (
+              <div className="mt-6 pt-5 border-t border-border text-center">
+                <span className="text-sm text-dim">注册状态加载失败</span>
+                <button
+                  type="button"
+                  onClick={refreshRegistrationStatus}
+                  className="text-sm text-primary font-medium ml-1.5 hover:underline cursor-pointer"
+                >
+                  重试
                 </button>
               </div>
             )}

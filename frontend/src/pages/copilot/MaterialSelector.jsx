@@ -28,7 +28,18 @@ export default function MaterialSelector({ value = [], onChange, disabled = fals
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    let active = true;
+    getDocuments()
+      .then((data) => {
+        if (!active) return;
+        setDocuments(data.items || []);
+        setAccept((data.supported_extensions || []).join(","));
+      })
+      .catch((err) => { if (active) setError(err.message || "资料加载失败"); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, []);
 
   const toggle = (documentId) => {
     if (disabled) return;

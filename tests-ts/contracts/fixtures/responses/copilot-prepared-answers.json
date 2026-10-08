@@ -1,0 +1,44 @@
+{
+  "version": 2,
+  "document_ids": ["doc-1"],
+  "source_snapshot": [
+    {
+      "document_id": "doc-1",
+      "filename": "project.md",
+      "updated_at": "2026-10-08T00:00:00.000Z"
+    }
+  ],
+  "source_fingerprint": "fixture",
+  "prepared_answers": {
+    "pa-node-1": {
+      "answer_id": "pa-node-1",
+      "node_id": "node-1",
+      "topic": "缓存一致性",
+      "intent": "technical",
+      "question_variants": ["你如何保证缓存一致性？"],
+      "prepared_answer": "我会先按一致性目标选择更新策略。",
+      "short_answer": "先定义一致性目标，再选择更新策略。",
+      "key_points": ["目标", "策略"],
+      "source_refs": [
+        {
+          "source_type": "personal_document",
+          "document_id": "doc-1",
+          "filename": "project.md",
+          "evidence": "项目采用了延迟双删。"
+        }
+      ],
+      "confidence": 0.9,
+      "usable": true,
+      "warnings": []
+    }
+  },
+  "uncompiled_nodes": [],
+  "compile_stats": {
+    "strategy_nodes": 1,
+    "compiled_answers": 1,
+    "question_variants": 1,
+    "source_documents": 1
+  },
+  "index_status": "ready",
+  "source_state": "current"
+}

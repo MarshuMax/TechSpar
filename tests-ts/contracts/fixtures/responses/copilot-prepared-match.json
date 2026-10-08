@@ -1,0 +1,35 @@
+{
+  "matched": true,
+  "route": "prepared",
+  "score": 0.94,
+  "semantic_score": 0.92,
+  "node_id": "node-1",
+  "answer_id": "pa-node-1",
+  "matched_question": "你如何保证缓存一致性？",
+  "answer": {
+    "answer_id": "pa-node-1",
+    "node_id": "node-1",
+    "topic": "缓存一致性",
+    "intent": "technical",
+    "question_variants": ["你如何保证缓存一致性？"],
+    "prepared_answer": "我会先按一致性目标选择更新策略。",
+    "short_answer": "先定义一致性目标，再选择更新策略。",
+    "key_points": ["目标", "策略"],
+    "source_refs": [],
+    "confidence": 0.9,
+    "usable": true,
+    "warnings": []
+  },
+  "candidates": [
+    {
+      "score": 0.94,
+      "semantic_score": 0.92,
+      "lexical_score": 0.4,
+      "node_id": "node-1",
+      "answer_id": "pa-node-1",
+      "matched_question": "你如何保证缓存一致性？",
+      "compatible": true
+    }
+  ],
+  "latency_ms": 4
+}

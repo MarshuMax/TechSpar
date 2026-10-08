@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Server,
   Sliders,
@@ -27,82 +27,14 @@ import {
   testLLMConnection,
   testEmbeddingConnection,
 } from "../api/interview";
-import {
-  getVoiceprintStatus,
-  putVoiceprintCredentials,
-  enrollVoiceprint,
-  deleteVoiceprintEnrollment,
-} from "../api/voiceprint";
 import { exportPersonalData, exportSystemData, importData } from "../api/dataMigration";
+import AfdianIcon from "../components/AfdianIcon";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
-
-// 录音参数
-const VP_SAMPLE_RATE = 16000;
-const VP_MIN_SECONDS = 6;
-
-// ── WAV / PCM 工具（用于声纹录音上传）──
-
-function encodeWav(pcm16, sampleRate) {
-  const dataSize = pcm16.length * 2;
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
-  const writeStr = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
-  writeStr(0, "RIFF");
-  view.setUint32(4, 36 + dataSize, true);
-  writeStr(8, "WAVE");
-  writeStr(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeStr(36, "data");
-  view.setUint32(40, dataSize, true);
-  let offset = 44;
-  for (let i = 0; i < pcm16.length; i++) {
-    view.setInt16(offset, pcm16[i], true);
-    offset += 2;
-  }
-  return new Blob([buffer], { type: "audio/wav" });
-}
-
-function mergeFloat32(chunks) {
-  const total = chunks.reduce((s, c) => s + c.length, 0);
-  const out = new Float32Array(total);
-  let off = 0;
-  for (const c of chunks) { out.set(c, off); off += c.length; }
-  return out;
-}
-
-function resampleToPcm16(input, inputRate, outputRate) {
-  if (inputRate === outputRate) {
-    const pcm = new Int16Array(input.length);
-    for (let i = 0; i < input.length; i++) {
-      const s = Math.max(-1, Math.min(1, input[i]));
-      pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-    }
-    return pcm;
-  }
-  const ratio = inputRate / outputRate;
-  const outLen = Math.max(1, Math.round(input.length / ratio));
-  const pcm = new Int16Array(outLen);
-  for (let i = 0; i < outLen; i++) {
-    const src = i * ratio;
-    const lo = Math.floor(src);
-    const hi = Math.min(lo + 1, input.length - 1);
-    const w = src - lo;
-    const v = (input[lo] ?? 0) * (1 - w) + (input[hi] ?? 0) * w;
-    const s = Math.max(-1, Math.min(1, v));
-    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-  }
-  return pcm;
-}
+import { isDesktopApp } from "@/lib/desktop";
 
 const DIVERGENCE_OPTIONS = [
   { value: 1, label: "聚焦薄弱", description: "100% 针对存在弱点的知识域，适合考前专项突击" },
@@ -112,11 +44,36 @@ const DIVERGENCE_OPTIONS = [
   { value: 5, label: "全面探索", description: "100% 探索未涉猎过的新知识领域，发掘潜在盲区" },
 ];
 
+/**
+ * key 来源的两个选项。
+ *
+ * 后端只存一个 `use_platform`：默认自己的 key 优先（填了就是想用它），
+ * 勾上则显式改走部署方的共享 key，自己的 key 留着不删。
+ */
+const LLM_SOURCE_OPTIONS = [
+  {
+    value: "platform",
+    platform: true,
+    label: "用平台提供的 key",
+    description: "不用配置，开箱即用；按账号额度计费，用完需要赞助或换成自己的 key。",
+  },
+  {
+    value: "own",
+    platform: false,
+    label: "用我自己的 key",
+    description: "不消耗平台额度，用量不设上限；费用直接结算在你自己的服务商那边。",
+  },
+];
+
 export default function Settings() {
   const [apiBase, setApiBase] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
+  const [compatibility, setCompatibility] = useState("generic");
   const [temperature, setTemperature] = useState(0.7);
+  // key 来源：部署方是否提供共享 key，以及用户是否显式选它
+  const [platformLlm, setPlatformLlm] = useState(false);
+  const [usePlatform, setUsePlatform] = useState(false);
   const [numQuestions, setNumQuestions] = useState(10);
   const [divergence, setDivergence] = useState(3);
   const [showKey, setShowKey] = useState(false);
@@ -137,6 +94,7 @@ export default function Settings() {
 
   // 可选服务密钥（每用户，对应功能开关）
   const [dashscopeKey, setDashscopeKey] = useState("");
+  const [dashscopeWorkspace, setDashscopeWorkspace] = useState("");
   const [tavilyKey, setTavilyKey] = useState("");
   const [ossKeyId, setOssKeyId] = useState("");
   const [ossKeySecret, setOssKeySecret] = useState("");
@@ -149,6 +107,12 @@ export default function Settings() {
   // 账户/系统配置（全局，仅 admin 可见）
   const [allowRegistration, setAllowRegistration] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordMessage, setPasswordMessage] = useState("");
+  const [passwordError, setPasswordError] = useState("");
 
   // 重建向量索引（手动按钮；换 embedding 后弹警告提醒）
   const [needsReindex, setNeedsReindex] = useState(false);
@@ -163,30 +127,10 @@ export default function Settings() {
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("llm");
 
-  // 声纹识别状态
-  const [vpStatus, setVpStatus] = useState({ configured: false, enrolled: false });
-  const [vpSecretId, setVpSecretId] = useState("");
-  const [vpSecretKey, setVpSecretKey] = useState("");
-  const [vpAppId, setVpAppId] = useState("");
-  const [showVpKey, setShowVpKey] = useState(false);
-  const [vpBusy, setVpBusy] = useState(false);
-  const [vpMessage, setVpMessage] = useState("");
-  const [vpRecording, setVpRecording] = useState(false);
-  const [vpRecordingSec, setVpRecordingSec] = useState(0);
-
-  const vpStreamRef = useRef(null);
-  const vpCtxRef = useRef(null);
-  const vpSourceRef = useRef(null);
-  const vpProcessorRef = useRef(null);
-  const vpChunksRef = useRef([]);
-  const vpInputRateRef = useRef(VP_SAMPLE_RATE);
-  const vpTimerRef = useRef(null);
-
   // Section refs for scrollspy
   const llmRef = useRef(null);
   const embeddingRef = useRef(null);
   const servicesRef = useRef(null);
-  const voiceprintRef = useRef(null);
   const trainingRef = useRef(null);
   const accountRef = useRef(null);
   const migrationRef = useRef(null);
@@ -194,12 +138,12 @@ export default function Settings() {
     llm: llmRef,
     embedding: embeddingRef,
     services: servicesRef,
-    voiceprint: voiceprintRef,
     training: trainingRef,
     account: accountRef,
     migration: migrationRef,
   };
-  const scrollSpyLock = useRef(0);
+  const scrollSpyLock = useRef(false);
+  const scrollSpyUnlockTimer = useRef(null);
 
   // 数据迁移状态
   const [exporting, setExporting] = useState(null); // null | "personal" | "system"
@@ -219,7 +163,10 @@ export default function Settings() {
         setApiBase(data.llm.api_base || "");
         setApiKey(data.llm.api_key || "");
         setModel(data.llm.model || "");
+        setCompatibility(data.llm.compatibility || "generic");
         setTemperature(data.llm.temperature ?? 0.7);
+        setPlatformLlm(Boolean(data.platform?.llm));
+        setUsePlatform(data.source === "platform");
         const emb = data.embedding || {};
         setEmbBackend(emb.backend || "");
         setEmbApiBase(emb.api_base || "");
@@ -230,6 +177,7 @@ export default function Settings() {
         setEmbLocalPath(emb.local_path || "");
         const svc = data.services || {};
         setDashscopeKey(svc.dashscope_api_key || "");
+        setDashscopeWorkspace(svc.dashscope_workspace_id || "");
         setTavilyKey(svc.tavily_api_key || "");
         setOssKeyId(svc.oss_access_key_id || "");
         setOssKeySecret(svc.oss_access_key_secret || "");
@@ -244,29 +192,13 @@ export default function Settings() {
       .catch((err) => setError("加载设置失败: " + err.message))
       .finally(() => setLoading(false));
 
-    getVoiceprintStatus()
-      .then((s) => setVpStatus(s))
-      .catch(() => {});
   }, []);
 
-  const cleanupRecorder = useCallback(() => {
-    if (vpTimerRef.current != null) {
-      clearInterval(vpTimerRef.current);
-      vpTimerRef.current = null;
+  useEffect(() => () => {
+    if (scrollSpyUnlockTimer.current != null) {
+      window.clearTimeout(scrollSpyUnlockTimer.current);
     }
-    vpProcessorRef.current?.disconnect();
-    vpProcessorRef.current = null;
-    vpSourceRef.current?.disconnect();
-    vpSourceRef.current = null;
-    vpStreamRef.current?.getTracks().forEach((t) => t.stop());
-    vpStreamRef.current = null;
-    vpCtxRef.current?.close().catch(() => {});
-    vpCtxRef.current = null;
-    setVpRecording(false);
-    setVpRecordingSec(0);
   }, []);
-
-  useEffect(() => () => cleanupRecorder(), [cleanupRecorder]);
 
   // ScrollSpy: highlight tab whose section is most prominent in the viewport
   useEffect(() => {
@@ -277,7 +209,7 @@ export default function Settings() {
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (Date.now() < scrollSpyLock.current) return;
+        if (scrollSpyLock.current) return;
         const visible = entries
           .filter((e) => e.isIntersecting)
           .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
@@ -305,110 +237,39 @@ export default function Settings() {
     const el = sectionRefs[id]?.current;
     if (!el) return;
     // Suppress scrollspy briefly while the smooth scroll plays out
-    scrollSpyLock.current = Date.now() + 700;
+    scrollSpyLock.current = true;
+    if (scrollSpyUnlockTimer.current != null) {
+      window.clearTimeout(scrollSpyUnlockTimer.current);
+    }
+    scrollSpyUnlockTimer.current = window.setTimeout(() => {
+      scrollSpyLock.current = false;
+      scrollSpyUnlockTimer.current = null;
+    }, 700);
     el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const handleSaveVpCredentials = async () => {
-    setVpBusy(true);
-    setVpMessage("");
+  const handlePasswordChange = async () => {
+    setPasswordMessage("");
+    setPasswordError("");
+    if (newPassword.length < 8) { setPasswordError("新密码至少 8 个字符"); return; }
+    if (newPassword !== confirmPassword) { setPasswordError("两次输入的新密码不一致"); return; }
+    setPasswordBusy(true);
     try {
-      await putVoiceprintCredentials({
-        secret_id: vpSecretId.trim(),
-        secret_key: vpSecretKey.trim(),
-        app_id: vpAppId.trim(),
+      const response = await fetch("/api/auth/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("token") || ""}` },
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
       });
-      const s = await getVoiceprintStatus();
-      setVpStatus(s);
-      setVpMessage("凭据已验证并保存");
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.detail || "修改密码失败");
+      }
+      setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
+      setPasswordMessage("密码已更新");
     } catch (err) {
-      setVpMessage("保存失败：" + (err.message || "未知错误"));
+      setPasswordError(err.message || "修改密码失败");
     } finally {
-      setVpBusy(false);
-    }
-  };
-
-  const startVpRecording = async () => {
-    setVpMessage("");
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          sampleRate: VP_SAMPLE_RATE,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      const ctx = new AudioContext({ sampleRate: VP_SAMPLE_RATE });
-      vpInputRateRef.current = ctx.sampleRate;
-      const source = ctx.createMediaStreamSource(stream);
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      vpChunksRef.current = [];
-
-      processor.onaudioprocess = (e) => {
-        const ch = e.inputBuffer.getChannelData(0);
-        vpChunksRef.current.push(new Float32Array(ch));
-      };
-      source.connect(processor);
-      processor.connect(ctx.destination);
-
-      vpStreamRef.current = stream;
-      vpCtxRef.current = ctx;
-      vpSourceRef.current = source;
-      vpProcessorRef.current = processor;
-
-      setVpRecording(true);
-      setVpRecordingSec(0);
-      const t0 = Date.now();
-      vpTimerRef.current = setInterval(() => {
-        setVpRecordingSec((Date.now() - t0) / 1000);
-      }, 200);
-    } catch (err) {
-      cleanupRecorder();
-      setVpMessage("麦克风访问失败：" + (err.message || "未知错误"));
-    }
-  };
-
-  const stopVpRecording = async () => {
-    const chunks = vpChunksRef.current;
-    const inputRate = vpInputRateRef.current;
-    const seconds = vpRecordingSec;
-    cleanupRecorder();
-
-    if (seconds < VP_MIN_SECONDS) {
-      setVpMessage(`录音太短，至少 ${VP_MIN_SECONDS} 秒`);
-      return;
-    }
-
-    setVpBusy(true);
-    try {
-      const merged = mergeFloat32(chunks);
-      const pcm = resampleToPcm16(merged, inputRate, VP_SAMPLE_RATE);
-      const wav = encodeWav(pcm, VP_SAMPLE_RATE);
-      await enrollVoiceprint(wav);
-      const s = await getVoiceprintStatus();
-      setVpStatus(s);
-      setVpMessage("声纹已注册");
-    } catch (err) {
-      setVpMessage("注册失败：" + (err.message || "未知错误"));
-    } finally {
-      setVpBusy(false);
-    }
-  };
-
-  const handleDeleteEnrollment = async () => {
-    setVpBusy(true);
-    setVpMessage("");
-    try {
-      await deleteVoiceprintEnrollment();
-      const s = await getVoiceprintStatus();
-      setVpStatus(s);
-      setVpMessage("已删除已注册声纹");
-    } catch (err) {
-      setVpMessage("删除失败：" + (err.message || "未知错误"));
-    } finally {
-      setVpBusy(false);
+      setPasswordBusy(false);
     }
   };
 
@@ -453,7 +314,7 @@ export default function Settings() {
         overwriteFiles: importOverwriteFiles,
       });
       setMigrationMessage(
-        `已导入：数据写入/更新 ${r.db_inserted} 条，跳过 ${r.db_skipped} 条；文件复制 ${r.files_copied} 个，跳过 ${r.files_skipped} 个。向量索引未随备份迁移，请到 Embedding 设置中重建索引。`
+        `已导入：数据写入/更新 ${r.db_inserted} 条，跳过 ${r.db_skipped} 条；文件复制或合并 ${r.files_copied} 个，跳过 ${r.files_skipped} 个。个人画像已与本地画像合并，练习统计已按去重后的记录重新计算。向量索引未随备份迁移，请到 Embedding 设置中重建索引。`
       );
       setImportFile(null);
       setImportConfirming(false);
@@ -468,7 +329,7 @@ export default function Settings() {
   const handleTestLLM = async () => {
     setLlmTest({ status: "testing" });
     try {
-      const r = await testLLMConnection({ api_base: apiBase, api_key: apiKey, model });
+      const r = await testLLMConnection({ api_base: apiBase, api_key: apiKey, model, compatibility });
       setLlmTest(r.ok ? { status: "ok" } : { status: "fail", error: r.error });
     } catch (err) {
       setLlmTest({ status: "fail", error: err.message });
@@ -493,12 +354,20 @@ export default function Settings() {
     }
   };
 
+  // 和后端 resolveLlmConfig 同一套判定，让用户在保存前就能看到会走哪条路。
+  // "fallback" = 选了自己的 key 但还没填全，实际仍然落回平台。
+  const llmSource =
+    usePlatform && platformLlm ? "platform" : apiKey && model ? "user" : platformLlm ? "fallback" : "user";
+  // 选了平台就把自己的那一片停掉:不只是看着灰,而是真的填不进去——
+  // 禁用的输入框浏览器也不会往里自动填。
+  const ownLlmDisabled = llmSource === "platform";
+
   const handleSave = async () => {
     setSaving(true);
     setError("");
     try {
       const res = await updateSettings({
-        llm: { api_base: apiBase, api_key: apiKey, model, temperature },
+        llm: { api_base: apiBase, api_key: apiKey, model, compatibility, temperature, use_platform: usePlatform },
         embedding: {
           backend: embBackend,
           api_base: embApiBase,
@@ -510,6 +379,7 @@ export default function Settings() {
         },
         services: {
           dashscope_api_key: dashscopeKey,
+          dashscope_workspace_id: dashscopeWorkspace.trim(),
           tavily_api_key: tavilyKey,
           oss_access_key_id: ossKeyId,
           oss_access_key_secret: ossKeySecret,
@@ -570,12 +440,13 @@ export default function Settings() {
   const inputClass = "h-12 rounded-2xl bg-card/90";
 
   // 「测试连接」按钮 + 结果，LLM / Embedding 两处复用
-  const renderTestRow = (test, onTest) => (
+  // disabledHint 非空即代表按钮不可用,内容就是不可用的原因
+  const renderTestRow = (test, onTest, disabledHint = "") => (
     <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-border/40 pt-5">
       <Button
         variant="outline"
         onClick={onTest}
-        disabled={test?.status === "testing"}
+        disabled={Boolean(disabledHint) || test?.status === "testing"}
         className="h-10 rounded-xl"
       >
         {test?.status === "testing" ? (
@@ -597,7 +468,9 @@ export default function Settings() {
           <XCircle size={15} className="mt-0.5 shrink-0" /> {test.error || "连接失败"}
         </span>
       ) : test?.status === "testing" ? null : (
-        <span className="text-[12px] text-dim">用当前填写的配置发一个最小请求，验证是否可用</span>
+        <span className="text-[12px] text-dim">
+          {disabledHint || "用当前填写的配置发一个最小请求，验证是否可用"}
+        </span>
       )}
     </div>
   );
@@ -606,9 +479,8 @@ export default function Settings() {
     { id: "llm", label: "LLM 服务", icon: Server },
     { id: "embedding", label: "Embedding", icon: Boxes },
     { id: "services", label: "可选服务", icon: KeyRound },
-    { id: "voiceprint", label: "声纹识别", icon: Mic },
     { id: "training", label: "训练参数", icon: Sliders },
-    ...(isAdmin ? [{ id: "account", label: "账户", icon: UserCog }] : []),
+    { id: "account", label: "账户", icon: UserCog },
     { id: "migration", label: "数据迁移", icon: Database },
   ];
 
@@ -661,43 +533,118 @@ export default function Settings() {
               <Server size={16} className="text-primary" />
               <span className="text-base font-semibold">LLM 服务配置</span>
             </div>
-            <div className="text-[13px] text-dim mb-6">你自己的 LLM，仅对你生效。系统不提供共享 key，这里必须填你自己的；更改后立即生效。</div>
+            <div className="text-[13px] text-dim mb-6">
+              {platformLlm
+                ? "选择这个账号用谁的 key。配置只对你生效，更改后立即生效。"
+                : "你自己的 LLM，仅对你生效。本部署没有共享 key，这里必须填你自己的；更改后立即生效。"}
+            </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
+            {platformLlm && (
+              <div className="mb-6">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {LLM_SOURCE_OPTIONS.map((option) => {
+                    const active = usePlatform === option.platform;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setUsePlatform(option.platform)}
+                        className={cn(
+                          "rounded-2xl border p-3.5 text-left transition-colors",
+                          active
+                            ? "border-primary bg-primary/5"
+                            : "border-border/70 hover:bg-hover/60"
+                        )}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[13px] font-medium text-text">{option.label}</span>
+                          {active && <Check size={15} className="shrink-0 text-primary" />}
+                        </div>
+                        <div className="mt-1 text-[12px] leading-relaxed text-dim">{option.description}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div
+                  className={cn(
+                    "mt-2.5 text-[12px] leading-relaxed",
+                    llmSource === "fallback" ? "text-orange" : "text-dim/80"
+                  )}
+                >
+                  {llmSource === "platform"
+                    ? `当前用平台的 key，按额度计费；额度用完可以换成自己的 key，或者赞助提升额度。${
+                        apiKey && model ? "你自己的 key 已保存，但现在没在用。" : ""
+                      }`
+                    : llmSource === "user"
+                      ? "当前用你自己的 key，不消耗平台额度，用量和费用都算在你自己的服务商那边。"
+                      : "Model 和 API Key 都填上才会切过去；在此之前仍然走平台的 key 和额度。"}
+                </div>
+              </div>
+            )}
+
+            <div className={cn("grid gap-4 md:grid-cols-2", ownLlmDisabled && "opacity-60")}>
               <div className="space-y-2">
                 <Label className={labelClass}>API Base URL</Label>
                 <Input
+                  name="llm-api-base"
                   className={inputClass}
+                  disabled={ownLlmDisabled}
                   placeholder="例：https://api.openai.com/v1"
                   value={apiBase}
                   onChange={(e) => setApiBase(e.target.value)}
                 />
+                <div className="text-[12px] text-dim/70">
+                  {compatibility === "deepseek" ? "DeepSeek 官方 API 填 https://api.deepseek.com（不要加 /v1）" : "多数 OpenAI 兼容服务填写包含 /v1 的 Base URL。"}
+                </div>
               </div>
               <div className="space-y-2">
                 <Label className={labelClass}>Model</Label>
                 <Input
+                  name="llm-model"
                   className={inputClass}
+                  disabled={ownLlmDisabled}
                   placeholder="例：gpt-4o"
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
                 />
               </div>
+              <div className="space-y-2">
+                <Label className={labelClass}>API 兼容模式</Label>
+                <label className="flex items-center justify-between gap-3 rounded-2xl border border-border/80 bg-background/75 px-3 py-2.5 text-sm">
+                  <span className="shrink-0 text-dim">请求配置</span>
+                  <select
+                    className="min-w-0 flex-1 bg-transparent text-right text-text outline-none disabled:cursor-not-allowed"
+                    disabled={ownLlmDisabled}
+                    value={compatibility}
+                    onChange={(e) => setCompatibility(e.target.value)}
+                  >
+                    <option value="generic">通用 OpenAI 兼容</option>
+                    <option value="deepseek">DeepSeek V4</option>
+                  </select>
+                </label>
+                <div className="text-[12px] text-dim/70">
+                  DeepSeek 模式只对结构化请求发送 JSON 输出和低推理参数，其他平台不会收到这些字段。
+                </div>
+              </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 mt-4">
+            <div className={cn("grid gap-4 md:grid-cols-2 mt-4", ownLlmDisabled && "opacity-60")}>
               <div className="space-y-2">
                 <Label className={labelClass}>API Key</Label>
                 <div className="relative">
                   <Input
+                    name="llm-api-key"
                     className={cn(inputClass, "pr-11")}
-                    type={showKey ? "text" : "password"}
+                    disabled={ownLlmDisabled}
+                    masked={!showKey}
                     placeholder="sk-...（你自己的 key）"
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
                   />
                   <button
                     type="button"
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-dim hover:text-text transition-colors"
+                    disabled={ownLlmDisabled}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-dim transition-colors enabled:hover:text-text disabled:cursor-not-allowed"
                     onClick={() => setShowKey((v) => !v)}
                   >
                     {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -709,6 +656,7 @@ export default function Settings() {
                 <Input
                   className={inputClass}
                   type="number"
+                  disabled={ownLlmDisabled}
                   step={0.1}
                   min={0}
                   max={2}
@@ -718,7 +666,15 @@ export default function Settings() {
               </div>
             </div>
 
-            {renderTestRow(llmTest, handleTestLLM)}
+            {renderTestRow(
+              llmTest,
+              handleTestLLM,
+              ownLlmDisabled
+                ? "现在用的是平台的 key，不需要测试"
+                : apiKey && model
+                  ? ""
+                  : "填上自己的 Model 和 API Key 才能测试"
+            )}
           </CardContent>
         </Card>
 
@@ -730,7 +686,7 @@ export default function Settings() {
               <span className="text-base font-semibold">Embedding 模型</span>
             </div>
             <div className="text-[13px] text-dim mb-6">
-              你自己的 Embedding，仅对你生效；用于题库 / 简历 / 知识库的向量化，必须配置。
+              你自己的 Embedding，仅对你生效；用于题库、知识库、个人资料库和记忆的向量化，必须配置。简历会直接读取全文，不使用 Embedding。
               <span className="text-amber-500/90">更换模型后请点下方「更新向量索引」重建（会清空并重算向量，历史会话记忆向量无法恢复）。</span>
             </div>
 
@@ -761,7 +717,7 @@ export default function Settings() {
                 {[
                   { value: "", hint: "填了 API 字段走 API，否则走本地（兼容老配置）" },
                   { value: "api", hint: "通过 OpenAI 兼容接口请求 embedding" },
-                  { value: "local", hint: "用 HuggingFace 加载本地模型，需 `pip install -r requirements.local-embedding.txt`" },
+                  { value: "local", hint: "用 Transformers.js 在本机运行 ONNX 模型，首次使用会自动下载并缓存" },
                 ].find((o) => o.value === embBackend)?.hint}
               </div>
             </div>
@@ -794,7 +750,7 @@ export default function Settings() {
                   <div className="relative">
                     <Input
                       className={cn(inputClass, "pr-11")}
-                      type={showEmbKey ? "text" : "password"}
+                      masked={!showEmbKey}
                       placeholder="sk-..."
                       value={embApiKey}
                       onChange={(e) => setEmbApiKey(e.target.value)}
@@ -836,7 +792,7 @@ export default function Settings() {
                     <Label className={labelClass}>Model Name</Label>
                     <Input
                       className={inputClass}
-                      placeholder="例：BAAI/bge-m3"
+                      placeholder="例：Xenova/bge-m3"
                       value={embLocalModel}
                       onChange={(e) => setEmbLocalModel(e.target.value)}
                     />
@@ -860,7 +816,7 @@ export default function Settings() {
               <div className="mt-6 flex items-start gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/5 p-4 text-[13px] text-amber-500/90">
                 <AlertTriangle size={16} className="mt-0.5 shrink-0" />
                 <span>
-                  你更换了 Embedding 模型，旧向量已失效。点击下方按钮重建简历 / 知识库 / 记忆向量；
+                  你更换了 Embedding 模型，旧向量已失效。点击下方按钮重建知识库 / 个人资料库 / 记忆向量；
                   在重建前，相关检索结果会暂时为空。
                 </span>
               </div>
@@ -897,7 +853,7 @@ export default function Settings() {
                     </span>
                   ) : (
                     <span className="text-[12px] text-dim">
-                      更换 Embedding 模型并保存后，点此用新模型重建简历 / 知识库 / 记忆向量
+                      更换 Embedding 模型并保存后，点此用新模型重建知识库 / 个人资料库 / 记忆向量
                     </span>
                   ))}
               </div>
@@ -948,7 +904,7 @@ export default function Settings() {
                 <div className="relative">
                   <Input
                     className={cn(inputClass, "pr-11")}
-                    type={showDashscope ? "text" : "password"}
+                    masked={!showDashscope}
                     placeholder="sk-...（语音输入 / 录音转写 / Copilot 实时识别）"
                     value={dashscopeKey}
                     onChange={(e) => setDashscopeKey(e.target.value)}
@@ -962,6 +918,9 @@ export default function Settings() {
                   </button>
                 </div>
                 <div className="text-[12px] text-dim/70">阿里云百炼（DashScope）。不填则语音相关功能不可用。</div>
+                <Label className={labelClass}>百炼业务空间 ID（北京）</Label>
+                <Input className={inputClass} placeholder="llm-...（可选）" value={dashscopeWorkspace} onChange={(e) => setDashscopeWorkspace(e.target.value)} />
+                <div className="text-[12px] text-dim/70">Copilot 使用 Qwen-Audio-3.1-ASR 实时版。填写业务空间 ID 后使用该空间的专属接口；留空使用北京公共接口。</div>
               </div>
 
               {/* Tavily */}
@@ -970,7 +929,7 @@ export default function Settings() {
                 <div className="relative">
                   <Input
                     className={cn(inputClass, "pr-11")}
-                    type={showTavily ? "text" : "password"}
+                    masked={!showTavily}
                     placeholder="tvly-...（Copilot 联网搜索公司情报）"
                     value={tavilyKey}
                     onChange={(e) => setTavilyKey(e.target.value)}
@@ -1008,7 +967,7 @@ export default function Settings() {
                     <div className="relative">
                       <Input
                         className={cn(inputClass, "pr-11")}
-                        type={showOssSecret ? "text" : "password"}
+                        masked={!showOssSecret}
                         placeholder="••••••"
                         value={ossKeySecret}
                         onChange={(e) => setOssKeySecret(e.target.value)}
@@ -1028,123 +987,6 @@ export default function Settings() {
                   </div>
                 </div>
               </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Voiceprint (Optional) */}
-        <Card ref={voiceprintRef} data-tab-id="voiceprint" className="overflow-hidden border-border/40 bg-card/40 scroll-mt-4">
-          <CardContent className="p-5 md:p-7">
-            <div className="flex items-center gap-2 mb-1">
-              <Mic size={16} className="text-primary" />
-              <span className="text-base font-semibold">声纹识别（可选）</span>
-            </div>
-            <div className="text-[13px] text-dim mb-5">
-              配置腾讯云 VPR 凭据并提前录入候选人声纹后，实时面试中自动识别 HR 与候选人，无需手动切换。未配置时保持手动按钮模式。
-            </div>
-
-            <div className="rounded-xl border border-border/60 bg-background/40 px-4 py-3 mb-5">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-dim/80 mb-1">
-                当前状态
-              </div>
-              <div className="text-sm">
-                {vpStatus.enrolled ? (
-                  <span className="text-primary">● 已注册 {vpStatus.enrolled_at ? `(${vpStatus.enrolled_at.slice(0, 10)})` : ""}</span>
-                ) : vpStatus.configured ? (
-                  <span className="text-dim">◐ 已配置凭据，尚未注册声纹</span>
-                ) : (
-                  <span className="text-dim/70">○ 未配置</span>
-                )}
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label className={labelClass}>Secret Id</Label>
-                  <Input className={inputClass} value={vpSecretId} onChange={(e) => setVpSecretId(e.target.value)} placeholder="AKID..." />
-                </div>
-                <div className="space-y-2">
-                  <Label className={labelClass}>App Id (可选)</Label>
-                  <Input className={inputClass} value={vpAppId} onChange={(e) => setVpAppId(e.target.value)} placeholder="留空即可" />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label className={labelClass}>Secret Key</Label>
-                <div className="relative">
-                  <Input
-                    className={cn(inputClass, "pr-11")}
-                    type={showVpKey ? "text" : "password"}
-                    value={vpSecretKey}
-                    onChange={(e) => setVpSecretKey(e.target.value)}
-                    placeholder="腾讯云 Secret Key"
-                  />
-                  <button
-                    type="button"
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-dim hover:text-text transition-colors"
-                    onClick={() => setShowVpKey((v) => !v)}
-                  >
-                    {showVpKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-3 pt-1">
-                <Button
-                  variant="outline"
-                  disabled={vpBusy || vpRecording || !vpSecretId || !vpSecretKey}
-                  onClick={handleSaveVpCredentials}
-                >
-                  测试并保存凭据
-                </Button>
-              </div>
-
-              <div className="border-t border-border/40 pt-5 mt-2">
-                <Label className={labelClass}>候选人声纹</Label>
-                <div className="text-[12px] text-dim/70 mt-1 mb-3">
-                  {vpRecording
-                    ? `录音中：${vpRecordingSec.toFixed(1)} 秒`
-                    : `建议连续说话 ≥ ${VP_MIN_SECONDS} 秒，单人、安静环境`}
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  {vpRecording ? (
-                    <Button
-                      variant="outline"
-                      disabled={vpBusy}
-                      onClick={stopVpRecording}
-                      className="border-red-400/50 text-red-500 hover:bg-red-500/10"
-                    >
-                      <Square size={14} className="mr-1.5" />
-                      结束并上传
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="outline"
-                      disabled={vpBusy || !vpStatus.configured}
-                      onClick={startVpRecording}
-                    >
-                      <Mic size={14} className="mr-1.5" />
-                      {vpStatus.enrolled ? "重新录制" : "开始录制"}
-                    </Button>
-                  )}
-                  {vpStatus.enrolled && !vpRecording && (
-                    <Button
-                      variant="outline"
-                      disabled={vpBusy}
-                      onClick={handleDeleteEnrollment}
-                      className="border-border/60 hover:border-red-400/50 hover:text-red-500"
-                    >
-                      <Trash2 size={14} className="mr-1.5" />
-                      删除声纹
-                    </Button>
-                  )}
-                </div>
-              </div>
-
-              {vpMessage && (
-                <div className="text-[12px] text-dim pt-1">{vpMessage}</div>
-              )}
             </div>
           </CardContent>
         </Card>
@@ -1203,17 +1045,48 @@ export default function Settings() {
           </CardContent>
         </Card>
 
-        {/* Account / System (admin only) */}
-        {isAdmin && (
+        {/* Account / System */}
         <Card ref={accountRef} data-tab-id="account" className="overflow-hidden border-border/40 bg-card/40 scroll-mt-4">
           <CardContent className="p-5 md:p-7">
             <div className="flex items-center gap-2 mb-1">
               <UserCog size={16} className="text-primary" />
               <span className="text-base font-semibold">账户</span>
             </div>
-            <div className="text-[13px] text-dim mb-5">控制谁能进入系统。保存后立即生效。仅管理员可见。</div>
+            <div className="text-[13px] text-dim mb-5">管理当前账户凭证{isAdmin ? "和注册策略" : ""}。</div>
 
-            <label className="flex items-start justify-between gap-4 rounded-xl border border-border/60 bg-background/40 px-4 py-4 cursor-pointer select-none">
+            {/* 下面这三个才是真的 password 框。圈进 <form> 让 Chrome 的登录表单
+                启发式只在这里生效,不会跨整页去认领配置区的输入框当用户名栏。 */}
+            {isDesktopApp() ? (
+              <div className="rounded-xl border border-border/60 bg-background/40 px-4 py-4 text-[13px] text-dim leading-6">
+                桌面版使用仅保存在本机的随机凭证并自动进入，不暴露固定默认密码。
+              </div>
+            ) : (
+              <form
+                className="rounded-xl border border-border/60 bg-background/40 px-4 py-4 space-y-4"
+                onSubmit={(event) => event.preventDefault()}
+              >
+                <div>
+                  <div className="text-sm font-medium">修改密码</div>
+                  <div className="text-[12px] text-dim/70 mt-1">首次使用默认账户后请立即修改，至少 8 个字符。</div>
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <Input type="password" autoComplete="current-password" placeholder="当前密码" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
+                  <Input type="password" autoComplete="new-password" placeholder="新密码" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+                  <Input type="password" autoComplete="new-password" placeholder="再次输入新密码" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+                </div>
+                <div className="flex items-center gap-3">
+                  <Button variant="outline" disabled={passwordBusy || !currentPassword || !newPassword || !confirmPassword} onClick={handlePasswordChange}>
+                    {passwordBusy && <Loader2 size={14} className="mr-1.5 animate-spin" />}
+                    {passwordBusy ? "更新中…" : "更新密码"}
+                  </Button>
+                  {passwordMessage && <span className="text-[12px] text-emerald-500">{passwordMessage}</span>}
+                  {passwordError && <span className="text-[12px] text-red-500">{passwordError}</span>}
+                </div>
+              </form>
+            )}
+
+            {isAdmin && (
+            <label className="mt-4 flex items-start justify-between gap-4 rounded-xl border border-border/60 bg-background/40 px-4 py-4 cursor-pointer select-none">
               <div className="min-w-0">
                 <div className="text-sm font-medium">允许新用户注册</div>
                 <div className="text-[12px] text-dim/70 mt-1 leading-5">
@@ -1238,9 +1111,9 @@ export default function Settings() {
                 />
               </button>
             </label>
+            )}
           </CardContent>
         </Card>
-        )}
 
         {/* Data Migration */}
         <Card ref={migrationRef} data-tab-id="migration" className="overflow-hidden border-border/40 bg-card/40 scroll-mt-4">
@@ -1344,7 +1217,7 @@ export default function Settings() {
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2">
-                    <Label className={labelClass}>数据冲突策略</Label>
+                    <Label className={labelClass}>练习与对话记录冲突策略</Label>
                     <div className="flex gap-2">
                       {[
                         { value: "skip", label: "保留本地" },
@@ -1375,7 +1248,7 @@ export default function Settings() {
                         onChange={(e) => setImportOverwriteFiles(e.target.checked)}
                         className="accent-primary"
                       />
-                      <span className="text-[13px] text-dim">用归档文件覆盖本地</span>
+                      <span className="text-[13px] text-dim">用归档文件覆盖本地（个人画像始终安全合并）</span>
                     </label>
                   </div>
                 </div>
@@ -1387,7 +1260,7 @@ export default function Settings() {
                       <div className="text-[13px]">
                         将把 <span className="font-medium">{importFile?.name}</span> 合并到当前账户。
                         {importDbStrategy === "overwrite" && "当前账户内同 ID 的数据会被覆盖。"}
-                        {importOverwriteFiles && "用户文件也会被覆盖。"}
+                        {importOverwriteFiles && "除个人画像外，其他同名用户文件会被覆盖。"}
                       </div>
                     </div>
                     <div className="flex gap-2">
@@ -1419,10 +1292,36 @@ export default function Settings() {
           </CardContent>
         </Card>
 
+        {/* 赞助入口。放在最后一张卡片之后:用户已经用过产品,这时候开口才不突兀。 */}
+        <Card className="overflow-hidden border-border/40 bg-card/40">
+          <CardContent className="p-5 md:p-7">
+            <div className="flex items-center gap-2 mb-1">
+              <AfdianIcon size={16} className="text-primary" />
+              <h2 className="text-[15px] font-semibold">支持这个项目</h2>
+            </div>
+            <p className="mb-4 text-[13px] leading-relaxed text-dim">
+              TechSpar 社区版支持自行部署；官方网站和官方桌面端提供统一的平台服务与套餐。
+              你的支持会用于模型推理、服务器和持续开发。
+              <br />
+              如果它帮到了你，去爱发电赞助一点，对我意义很大。
+            </p>
+            <a
+              href="https://ifdian.net/a/techspar"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-[13px] font-medium transition-colors hover:border-primary/40 hover:text-primary"
+            >
+              <AfdianIcon size={15} className="text-primary" />
+              去爱发电赞助
+            </a>
+          </CardContent>
+        </Card>
+
+
         </div>
       </div>
 
-      {/* Sticky save bar (commits LLM + training params; 声纹/数据迁移 各自保存) */}
+      {/* Sticky save bar (commits LLM + training params; 数据迁移 各自保存) */}
       <div className="sticky bottom-0 z-10 -mx-4 mt-6 border-t border-border/40 bg-background/85 px-4 py-3 backdrop-blur-md md:-mx-7 md:px-7">
         <div className="flex items-center justify-end gap-4">
           {error ? (
@@ -1430,8 +1329,8 @@ export default function Settings() {
           ) : (
             <span className="text-[12px] text-dim/70">
               {isAdmin
-                ? "保存 LLM + Embedding + 服务密钥 + 训练参数 + 账户。声纹与数据迁移各自独立保存。"
-                : "保存 LLM + Embedding + 服务密钥 + 训练参数。声纹与数据迁移各自独立保存。"}
+                ? "保存 LLM + Embedding + 服务密钥 + 训练参数 + 账户。数据迁移独立保存。"
+                : "保存 LLM + Embedding + 服务密钥 + 训练参数。数据迁移独立保存。"}
             </span>
           )}
           <Button variant="gradient" className="px-8" onClick={handleSave} disabled={saving}>

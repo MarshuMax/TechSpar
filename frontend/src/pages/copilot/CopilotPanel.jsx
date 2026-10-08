@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Eye,
+  FileText,
   Loader2,
   Sparkles,
   Target,
@@ -149,9 +150,9 @@ export default function CopilotPanel({
             {answerLoading ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
           </div>
           <span className={cn("text-[11px] font-bold uppercase tracking-[0.15em]", (answerLoading || streamingAnswer) ? "text-green/90" : "text-dim/40")}>
-            {answerMeta?.source === "compiled" ? "预编译参考答案" : "AI 实时参考答案"}
+            {answerMeta?.source === "prepared" ? "预编译参考答案" : answerMeta?.source === "llm_augmented" ? "资料增强实时答案" : "AI 实时参考答案"}
           </span>
-          {answerMeta?.source === "compiled" && (
+          {answerMeta?.source === "prepared" && (
             <span className="ml-auto rounded-md border border-green/25 bg-green/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-green">
               ⚡ Prepared · {Math.round((answerMeta.confidence || 0) * 100)}% · {answerMeta.latencyMs}ms
             </span>
@@ -177,7 +178,7 @@ export default function CopilotPanel({
             </div>
           ) : streamingAnswer ? (
             <>
-              {answerMeta?.source === "compiled" && answerMeta.shortAnswer && (
+              {answerMeta?.source === "prepared" && answerMeta.shortAnswer && (
                 <div className="mb-2 flex gap-1 rounded-lg bg-hover/60 p-1">
                   <button className={cn("flex-1 rounded-md px-2 py-1 text-[10px] font-semibold", !showShort && "bg-card shadow-sm")} onClick={() => setShowShort(false)}>主答案</button>
                   <button className={cn("flex-1 rounded-md px-2 py-1 text-[10px] font-semibold", showShort && "bg-card shadow-sm")} onClick={() => setShowShort(true)}>短答案</button>
@@ -190,6 +191,21 @@ export default function CopilotPanel({
               {answerMeta?.matchedQuestion && (
                 <div className="mt-2 text-[10px] text-dim">命中问法：{answerMeta.matchedQuestion}</div>
               )}
+              {answerMeta?.sources?.length > 0 && (
+                <div className="mt-3 space-y-1.5 border-t border-border/30 pt-2.5">
+                  {answerMeta.sources.map((source, index) => (
+                    <div key={`${source.document_id || source.source_type}-${index}`} className="flex items-start gap-2 text-[10px] leading-4 text-dim">
+                      <FileText size={11} className="mt-0.5 shrink-0" />
+                      <span>{source.filename || source.source_type}{source.evidence ? `：${source.evidence}` : ""}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {answerMeta?.warnings?.map((warning) => (
+                <div key={warning} className="mt-2 flex gap-2 rounded-lg border border-amber-500/20 bg-amber-500/8 px-2.5 py-2 text-[10px] text-amber-500">
+                  <AlertTriangle size={11} className="shrink-0" /> {warning}
+                </div>
+              ))}
             </>
           ) : (
             <PanelEmptyState active={false} />

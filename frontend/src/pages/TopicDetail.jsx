@@ -17,6 +17,7 @@ import {
 import { getTopicIcon } from "../utils/topicIcons";
 import { getProfile, getTopicHistory, getTopicRetrospective, getTopics } from "../api/interview";
 import useTaskStatus from "../hooks/useTaskStatus";
+import { parseRetrospectiveSections, selectRetrospectiveSections } from "../lib/retrospectiveSections";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -46,9 +47,14 @@ export default function TopicDetail() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setLoading(true);
+    let cancelled = false;
+    const loadingTimer = window.setTimeout(() => {
+      if (!cancelled) setLoading(true);
+    }, 0);
+
     Promise.all([getProfile(), getTopics(), getTopicHistory(topic)])
       .then(([prof, topics, hist]) => {
+        if (cancelled) return;
         setProfile(prof);
         setTopicInfo(topics[topic] || { name: topic, icon: "" });
         setSessions(Array.isArray(hist) ? hist : []);
@@ -57,7 +63,15 @@ export default function TopicDetail() {
         else setRetrospective(null);
       })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => {
+        window.clearTimeout(loadingTimer);
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(loadingTimer);
+    };
   }, [topic]);
 
   const handleGenerate = async () => {
@@ -106,9 +120,9 @@ export default function TopicDetail() {
   const retrospectiveAt = mastery.retrospective_at;
   const retrospectiveSections = parseRetrospectiveSections(retrospective);
   const visibleSections = retrospectiveSections.slice(0, 4);
-  const nextStepsSection = retrospectiveSections.find((section) => /建议|下一步/.test(section.title));
+  const { diagnosis: diagnosisSection, nextSteps: nextStepsSection } = selectRetrospectiveSections(retrospectiveSections);
   const diagnosisText = mastery.notes
-    || extractPlainText(retrospectiveSections.find((section) => /进步|薄弱|掌握/.test(section.title))?.markdown, 180)
+    || extractPlainText(diagnosisSection?.markdown, 180)
     || "还没有形成稳定的阶段判断。";
   const latestSummary = extractSummarySnippet(latestSession?.review, latestSession?.overall);
   const actionText = extractPlainText(nextStepsSection?.markdown, 180)
@@ -655,49 +669,6 @@ function extractSummarySnippet(review, overall) {
     .trim();
 
   return truncate(condenseWhitespace(summaryPart), 180);
-}
-
-function parseRetrospectiveSections(markdown) {
-  if (!markdown) return [];
-
-  const lines = markdown.split("\n");
-  const sections = [];
-  let current = null;
-
-  const pushCurrent = () => {
-    if (!current) return;
-    const content = current.markdown.trim();
-    if (!content) return;
-    sections.push({ title: current.title, markdown: content });
-  };
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    const heading = parseRetrospectiveHeading(line);
-
-    if (heading) {
-      pushCurrent();
-      current = { title: heading, markdown: "" };
-      continue;
-    }
-
-    if (!current) current = { title: "阶段回顾", markdown: "" };
-    current.markdown += current.markdown ? `\n${rawLine}` : rawLine;
-  }
-
-  pushCurrent();
-  return sections;
-}
-
-function parseRetrospectiveHeading(line) {
-  if (!line) return "";
-  if (/^#{1,6}\s+/.test(line)) return cleanHeading(line.replace(/^#{1,6}\s+/, ""));
-  if (/^\d+\.\s+/.test(line)) return cleanHeading(line.replace(/^\d+\.\s+/, ""));
-  return "";
-}
-
-function cleanHeading(value) {
-  return value.replace(/\*\*/g, "").trim();
 }
 
 function buildPointFrequency(items = []) {

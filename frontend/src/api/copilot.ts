@@ -27,23 +27,8 @@ interface StartCopilotPrepOptions {
   documentIds?: string[];
 }
 
-export interface PreparedKnowledge {
-  version?: number | null;
-  document_ids?: string[];
-  source_snapshot?: Array<Record<string, unknown>>;
-  prepared_answers: Record<string, Record<string, unknown>>;
-  uncompiled_nodes: Array<Record<string, unknown>>;
-  compile_stats: Record<string, number>;
-  index_status?: string;
-}
-
-export interface PreparedMatchResult {
-  matched: boolean;
-  route: "prepared" | "miss";
-  score: number;
-  latency_ms: number;
-  [key: string]: unknown;
-}
+export type PreparedKnowledge = ApiResponse<"/api/copilot/prep/{prep_id}/prepared-answers", "get">;
+export type PreparedMatchResult = ApiResponse<"/api/copilot/prep/{prep_id}/test-match", "post">;
 
 /** 启动 Copilot Prep Phase */
 export async function startCopilotPrep({
